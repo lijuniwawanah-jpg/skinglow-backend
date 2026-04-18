@@ -573,7 +573,8 @@ async def get_current_user(user_id: str = Depends(verify_token)):
 # RUN SERVER
 # ============================================
 if __name__ == "__main__":
-    port = int(os.getenv("PORT", 8000))
+    import os
+    port = int(os.environ.get("PORT", 8000))
     
     print("=" * 60)
     print("🌟 SKINGLOW AI PRODUCTION BACKEND")
