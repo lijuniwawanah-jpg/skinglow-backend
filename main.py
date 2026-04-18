@@ -2,7 +2,8 @@
 # SKINGLOW AI - PRODUCTION BACKEND
 # Professional Skin Analysis API
 # ============================================
-
+from fastapi import FastAPI, File, UploadFile, HTTPException, Depends
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
