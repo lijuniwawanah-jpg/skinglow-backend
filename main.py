@@ -569,30 +569,31 @@ class LoginRequest(BaseModel):
 
 # Temporary storage (kwa testing tu)
 temp_users = {}
-
 @app.post("/auth/register")
 async def register(request: RegisterRequest):
-    """Register new user"""
+    """Register new user with database"""
     try:
         email = request.email
         password = request.password
         name = request.name
         
-        # Check if user exists
-        if email in temp_users:
-            return JSONResponse(
-                status_code=400,
-                content={"success": False, "message": "Email already registered"}
+        with get_db() as conn:
+            # Check if user exists
+            existing = conn.execute("SELECT id FROM users WHERE email = ?", (email,)).fetchone()
+            if existing:
+                return JSONResponse(
+                    status_code=400,
+                    content={"success": False, "message": "Email already registered"}
+                )
+            
+            # Create user
+            user_id = str(uuid.uuid4())
+            password_hash = hash_password(password)
+            conn.execute(
+                "INSERT INTO users (id, email, password_hash, name) VALUES (?, ?, ?, ?)",
+                (user_id, email, password_hash, name)
             )
-        
-        # Save user
-        user_id = str(uuid.uuid4())
-        temp_users[email] = {
-            "id": user_id,
-            "email": email,
-            "password": password,
-            "name": name
-        }
+            conn.commit()
         
         # Create token
         token = create_access_token(data={"sub": email, "user_id": user_id})
@@ -616,27 +617,33 @@ async def register(request: RegisterRequest):
 
 @app.post("/auth/login")
 async def login(request: LoginRequest):
-    """Login user"""
+    """Login user with database"""
     try:
         email = request.email
         password = request.password
         
-        # Find user
-        user = temp_users.get(email)
-        if not user:
-            return JSONResponse(
-                status_code=401,
-                content={"success": False, "message": "Invalid email or password"}
-            )
-        
-        if user.get("password") != password:
-            return JSONResponse(
-                status_code=401,
-                content={"success": False, "message": "Invalid email or password"}
-            )
+        with get_db() as conn:
+            user = conn.execute(
+                "SELECT id, email, password_hash, name FROM users WHERE email = ?",
+                (email,)
+            ).fetchone()
+            
+            if not user:
+                return JSONResponse(
+                    status_code=401,
+                    content={"success": False, "message": "Invalid email or password"}
+                )
+            
+            if user["password_hash"] != hash_password(password):
+                return JSONResponse(
+                    status_code=401,
+                    content={"success": False, "message": "Invalid email or password"}
+                )
+            
+            user_id = user["id"]
         
         # Create token
-        token = create_access_token(data={"sub": email, "user_id": user["id"]})
+        token = create_access_token(data={"sub": email, "user_id": user_id})
         
         return {
             "success": True,
@@ -644,9 +651,9 @@ async def login(request: LoginRequest):
             "token": token,
             "token_type": "bearer",
             "user": {
-                "id": user["id"],
+                "id": user_id,
                 "email": email,
-                "name": user.get("name")
+                "name": user["name"]
             }
         }
     except Exception as e:
@@ -654,8 +661,7 @@ async def login(request: LoginRequest):
             status_code=500,
             content={"success": False, "message": str(e)}
         )
-
-@app.get("/users/me")
+        @app.get("/users/me")
 async def get_current_user(user_id: str = Depends(verify_token)):
     """Get current user info"""
     for user in temp_users.values():
@@ -673,6 +679,128 @@ async def get_current_user(user_id: str = Depends(verify_token)):
         status_code=404,
         content={"success": False, "message": "User not found"}
     )
+    @app.post("/analyze/save")
+async def save_analysis(
+    file: UploadFile = File(...),
+    user_id: str = Depends(verify_token)
+):
+    """Save skin analysis to database"""
+    try:
+        contents = await file.read()
+        
+        # Analyze skin
+        analysis = analyze_with_mediapipe(contents)
+        if not analysis:
+            analysis = analyze_with_fallback(contents)
+        
+        skin_type = analysis.get("skin_type", "normal")
+        confidence = analysis.get("confidence", 0.75)
+        
+        # Save to database
+        analysis_id = str(uuid.uuid4())
+        with get_db() as conn:
+            conn.execute(
+                """INSERT INTO analyses (id, user_id, skin_type, confidence, recommendations) 
+                   VALUES (?, ?, ?, ?, ?)""",
+                (analysis_id, user_id, skin_type, confidence, str(analysis.get("recommendations", [])))
+            )
+            conn.commit()
+        
+        return {
+            "success": True,
+            "analysis_id": analysis_id,
+            "skin_type": skin_type,
+            "confidence": confidence
+        }
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "message": str(e)}
+        )
+
+@app.get("/analyses/history")
+async def get_analysis_history(user_id: str = Depends(verify_token)):
+    """Get user's analysis history"""
+    try:
+        with get_db() as conn:
+            analyses = conn.execute(
+                "SELECT id, skin_type, confidence, created_at FROM analyses WHERE user_id = ? ORDER BY created_at DESC",
+                (user_id,)
+            ).fetchall()
+        
+        return {
+            "success": True,
+            "analyses": [
+                {
+                    "id": a["id"],
+                    "skin_type": a["skin_type"],
+                    "confidence": a["confidence"],
+                    "created_at": a["created_at"]
+                }
+                for a in analyses
+            ]
+        }
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "message": str(e)}
+        )
+        
+
+# ============================================
+# DATABASE SETUP (SQLite)
+# ============================================
+
+import sqlite3
+import hashlib
+
+# Database file path
+DATABASE_FILE = "skinglow.db"
+
+def get_db():
+    """Get database connection"""
+    conn = sqlite3.connect(DATABASE_FILE)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+def init_db():
+    """Initialize database tables"""
+    with get_db() as conn:
+        # Users table
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS users (
+                id TEXT PRIMARY KEY,
+                email TEXT UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL,
+                name TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
+        # Skin analyses table
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS analyses (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                skin_type TEXT NOT NULL,
+                confidence REAL NOT NULL,
+                image_url TEXT,
+                recommendations TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(id)
+            )
+        ''')
+        
+        conn.commit()
+        print("✅ Database initialized!")
+
+# Hash password
+def hash_password(password: str) -> str:
+    return hashlib.sha256(password.encode()).hexdigest()
+
+# Initialize database on startup
+init_db()
+
 # ============================================
 # RUN SERVER
 # ============================================
