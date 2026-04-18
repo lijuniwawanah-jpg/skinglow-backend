@@ -2,12 +2,12 @@
 # SKINGLOW AI - PRODUCTION BACKEND
 # Professional Skin Analysis API
 # ============================================
-
 from fastapi import FastAPI, File, UploadFile, HTTPException, Depends
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from datetime import datetime, timedelta
+from datetime import datetime
 import uvicorn
 from PIL import Image
 import io
@@ -15,7 +15,15 @@ import os
 from typing import Dict, Optional
 import requests
 from dotenv import load_dotenv
+import asyncio
+
+# ============================================
+# USER AUTHENTICATION (JWT)
+# ============================================
+
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 import jwt
+from datetime import datetime, timedelta
 
 # Load environment variables
 load_dotenv()
@@ -39,35 +47,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# ============================================
-# SECURITY CONFIGURATION
-# ============================================
-SECRET_KEY = os.getenv('SECRET_KEY', 'your-secret-key-here')
-ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 30
-security = HTTPBearer()
-
-def create_access_token(data: dict, expires_delta: timedelta = None):
-    to_encode = data.copy()
-    if expires_delta:
-        expire = datetime.utcnow() + expires_delta
-    else:
-        expire = datetime.utcnow() + timedelta(minutes=15)
-    to_encode.update({"exp": expire})
-    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
-    return encoded_jwt
-
-def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
-    token = credentials.credentials
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        user_id: str = payload.get("sub")
-        if user_id is None:
-            raise HTTPException(status_code=401, detail="Invalid token")
-        return user_id
-    except jwt.PyJWTError:
-        raise HTTPException(status_code=401, detail="Invalid token")
 
 # ============================================
 # TRY TO LOAD MEDIAPIPE (Optional)
@@ -200,21 +179,24 @@ SKIN_CARE_DATA: Dict = {
 }
 
 # ============================================
-# REVERSE GEOCODING FUNCTION
+# REVERSE GEOCODING FUNCTION (Get City Name)
 # ============================================
 
 async def get_city_from_coordinates(lat: float, lon: float) -> str:
     """Get city name from coordinates using OpenStreetMap Nominatim"""
     try:
+        # Using OpenStreetMap Nominatim (free, no API key needed)
         geocode_url = f"https://nominatim.openstreetmap.org/reverse?lat={lat}&lon={lon}&format=json"
         response = requests.get(geocode_url, headers={'User-Agent': 'SkinGlowApp/1.0'}, timeout=10)
         
         if response.status_code == 200:
             data = response.json()
+            # Try to get city/town/village name
             city = data.get('address', {}).get('city') or \
                    data.get('address', {}).get('town') or \
                    data.get('address', {}).get('village') or \
                    data.get('address', {}).get('state_district') or \
+                   data.get('address', {}).get('county') or \
                    'Unknown'
             return city
         return 'Unknown'
@@ -483,10 +465,11 @@ async def get_weather(
     lon: float,
     skin_type: str = "normal"
 ):
-    """Get weather and sunscreen advice"""
+    """Get weather and sunscreen advice with location name"""
     
     weather = get_weather_data(lat, lon)
     
+    # If weather API fails or city is Unknown, try reverse geocoding
     city_name = weather.get("city", "Unknown")
     if city_name == "Unknown" or city_name == "":
         city_name = await get_city_from_coordinates(lat, lon)
@@ -549,32 +532,9 @@ async def get_skin_types():
     }
 
 # ============================================
-# AUTH ENDPOINTS (Placeholder)
-# ============================================
-
-@app.post("/auth/register")
-async def register(email: str, password: str):
-    """Register new user"""
-    # Implementation here
-    return {"message": "User registered successfully", "email": email}
-
-@app.post("/auth/login")
-async def login(email: str, password: str):
-    """Login user and return token"""
-    token = create_access_token(data={"sub": email})
-    return {"access_token": token, "token_type": "bearer"}
-
-@app.get("/users/me")
-async def get_current_user(user_id: str = Depends(verify_token)):
-    """Get current user info"""
-    return {"user_id": user_id, "email": user_id}
-
-# ============================================
 # RUN SERVER
 # ============================================
 if __name__ == "__main__":
-    port = int(os.getenv("PORT", 8000))
-    
     print("=" * 60)
     print("🌟 SKINGLOW AI PRODUCTION BACKEND")
     print("=" * 60)
@@ -582,13 +542,58 @@ if __name__ == "__main__":
     print(f"✅ Weather API: {'Configured' if WEATHER_API_KEY else 'Not configured'}")
     print(f"✅ Skin types: {len(SKIN_CARE_DATA)}")
     print("=" * 60)
-    print(f"🚀 Server starting on port {port}...")
-    print(f"📚 API Docs: https://skinglow-backend.up.railway.app/docs")
+    print("🚀 Server starting...")
+    print("📍 http://localhost:8000")
+    print("📚 API Docs: http://localhost:8000/docs")
     print("=" * 60)
     
     uvicorn.run(
         app,
         host="0.0.0.0",
-        port=port,
+        port=8000,
         log_level="info"
     )
+    
+SECRET_KEY = os.getenv('SECRET_KEY', 'your-secret-key-here')
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 30
+
+security = HTTPBearer()
+
+def create_access_token(data: dict, expires_delta: timedelta = None):
+    to_encode = data.copy()
+    if expires_delta:
+        expire = datetime.utcnow() + expires_delta
+    else:
+        expire = datetime.utcnow() + timedelta(minutes=15)
+    to_encode.update({"exp": expire})
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return encoded_jwt
+
+def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    token = credentials.credentials
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        user_id: str = payload.get("sub")
+        if user_id is None:
+            raise HTTPException(status_code=401, detail="Invalid token")
+        return user_id
+    except jwt.PyJWTError:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+@app.post("/auth/register")
+async def register(email: str, password: str):
+    """Register new user"""
+    # Implementation here
+    pass
+
+@app.post("/auth/login")
+async def login(email: str, password: str):
+    """Login user and return token"""
+    # Implementation here
+    pass
+
+@app.get("/users/me")
+async def get_current_user(user_id: str = Depends(verify_token)):
+    """Get current user info"""
+    return {"user_id": user_id, "email": "user@example.com"} updaTE FULL
