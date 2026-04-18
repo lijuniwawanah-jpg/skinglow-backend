@@ -596,4 +596,4 @@ async def login(email: str, password: str):
 @app.get("/users/me")
 async def get_current_user(user_id: str = Depends(verify_token)):
     """Get current user info"""
-    return {"user_id": user_id, "email": "user@example.com"} updaTE FULL
+    return {"user_id": user_id, "email": "user@example.com"}
