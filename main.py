@@ -8,7 +8,37 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from datetime import datetime, timedelta
-import uvicorn
+import uvicornfrom fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+import os
+
+app = FastAPI()
+
+# CORS - allow all origins
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+@app.get("/")
+async def root():
+    return {"status": "healthy", "message": "SkinGlow AI Backend is running!"}
+
+@app.get("/health")
+async def health():
+    return {"status": "operational"}
+
+@app.get("/test")
+async def test():
+    return {"message": "API is working!"}
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 8000))
+    print(f"🚀 Server starting on port {port}")
+    uvicorn.run(app, host="0.0.0.0", port=port)
 from PIL import Image
 import io
 import os
