@@ -547,12 +547,14 @@ if __name__ == "__main__":
     print("📚 API Docs: http://localhost:8000/docs")
     print("=" * 60)
     
-    uvicorn.run(
-        app,
-        host="0.0.0.0",
-        port=8000,
-        log_level="info"
-    )
+ port = int(os.getenv("PORT", 8000))
+
+uvicorn.run(
+    app,
+    host="0.0.0.0",
+    port=port,
+    log_level="info"
+)
     
 SECRET_KEY = os.getenv('SECRET_KEY', 'your-secret-key-here')
 ALGORITHM = "HS256"
