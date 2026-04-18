@@ -43,7 +43,9 @@ app.add_middleware(
 # ============================================
 # SECURITY CONFIGURATION
 # ============================================
-SECRET_KEY = os.getenv('SECRET_KEY', 'SKINGLOW_JWT_SECRET_WAWANAH_9f2c1a7b8d0e4f6c3a1d9e8f7b6c5a4d2e1f0b9c8d7e6a5b4c3d2e1f0a9b8c7')
+SECRET_KEY = os.getenv('SECRET_KEY')
+if not SECRET_KEY:
+    raise ValueError("SECRET_KEY environment variable is not set!")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 security = HTTPBearer()
