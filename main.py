@@ -569,34 +569,26 @@ async def get_current_user(user_id: str = Depends(verify_token)):
     """Get current user info"""
     return {"user_id": user_id, "email": user_id}
 
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-import os
-
-app = FastAPI()
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-@app.get("/")
-async def root():
-    return {"status": "healthy", "message": "SkinGlow AI Backend is running!"}
-
-@app.get("/health")
-async def health():
-    return {"status": "operational"}
-
-@app.get("/test")
-async def test():
-    return {"message": "API is working!"}
-
+# ============================================
+# RUN SERVER
+# ============================================
 if __name__ == "__main__":
-    import uvicorn
-    port = int(os.environ.get("PORT", 8000))
-    print(f"🚀 Server starting on port {port}")
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    port = int(os.getenv("PORT", 8000))
+    
+    print("=" * 60)
+    print("🌟 SKINGLOW AI PRODUCTION BACKEND")
+    print("=" * 60)
+    print(f"✅ MediaPipe: {'Available' if MEDIAPIPE_AVAILABLE else 'Not available'}")
+    print(f"✅ Weather API: {'Configured' if WEATHER_API_KEY else 'Not configured'}")
+    print(f"✅ Skin types: {len(SKIN_CARE_DATA)}")
+    print("=" * 60)
+    print(f"🚀 Server starting on port {port}...")
+    print(f"📚 API Docs: https://skinglow-backend.up.railway.app/docs")
+    print("=" * 60)
+    
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=port,
+        log_level="info"
+    )
