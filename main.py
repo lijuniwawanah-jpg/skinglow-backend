@@ -549,13 +549,13 @@ async def get_skin_types():
             for skin_id, data in SKIN_CARE_DATA.items()
         ]
     }
-
 # ============================================
-# AUTH ENDPOINTS (FIXED - Accept JSON body)
+# AUTH ENDPOINTS (COMPLETE FIX)
 # ============================================
 
 from pydantic import BaseModel
 import uuid
+from typing import Optional
 
 # Request models
 class RegisterRequest(BaseModel):
@@ -567,12 +567,12 @@ class LoginRequest(BaseModel):
     email: str
     password: str
 
-# Temporary storage (kwa testing tu - kwenye production tumia database)
+# Temporary storage (kwa testing tu)
 temp_users = {}
 
 @app.post("/auth/register")
 async def register(request: RegisterRequest):
-    """Register new user - accepts JSON body"""
+    """Register new user"""
     try:
         email = request.email
         password = request.password
@@ -616,14 +616,20 @@ async def register(request: RegisterRequest):
 
 @app.post("/auth/login")
 async def login(request: LoginRequest):
-    """Login user - accepts JSON body"""
+    """Login user"""
     try:
         email = request.email
         password = request.password
         
         # Find user
         user = temp_users.get(email)
-        if not user or user.get("password") != password:
+        if not user:
+            return JSONResponse(
+                status_code=401,
+                content={"success": False, "message": "Invalid email or password"}
+            )
+        
+        if user.get("password") != password:
             return JSONResponse(
                 status_code=401,
                 content={"success": False, "message": "Invalid email or password"}
@@ -652,27 +658,21 @@ async def login(request: LoginRequest):
 @app.get("/users/me")
 async def get_current_user(user_id: str = Depends(verify_token)):
     """Get current user info"""
-    user = None
-    for u in temp_users.values():
-        if u["id"] == user_id:
-            user = u
-            break
+    for user in temp_users.values():
+        if user["id"] == user_id:
+            return {
+                "success": True,
+                "user": {
+                    "id": user["id"],
+                    "email": user["email"],
+                    "name": user.get("name")
+                }
+            }
     
-    if not user:
-        return JSONResponse(
-            status_code=404,
-            content={"success": False, "message": "User not found"}
-        )
-    
-    return {
-        "success": True,
-        "user": {
-            "id": user["id"],
-            "email": user["email"],
-            "name": user.get("name")
-        }
-    }
-
+    return JSONResponse(
+        status_code=404,
+        content={"success": False, "message": "User not found"}
+    )
 # ============================================
 # RUN SERVER
 # ============================================
