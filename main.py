@@ -551,25 +551,127 @@ async def get_skin_types():
     }
 
 # ============================================
-# AUTH ENDPOINTS (Placeholder)
+# AUTH ENDPOINTS (FIXED - Accept JSON body)
 # ============================================
 
+from pydantic import BaseModel
+import uuid
+
+# Request models
+class RegisterRequest(BaseModel):
+    email: str
+    password: str
+    name: Optional[str] = None
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+# Temporary storage (kwa testing tu - kwenye production tumia database)
+temp_users = {}
+
 @app.post("/auth/register")
-async def register(email: str, password: str):
-    """Register new user"""
-    # Implementation here
-    return {"message": "User registered successfully", "email": email}
+async def register(request: RegisterRequest):
+    """Register new user - accepts JSON body"""
+    try:
+        email = request.email
+        password = request.password
+        name = request.name
+        
+        # Check if user exists
+        if email in temp_users:
+            return JSONResponse(
+                status_code=400,
+                content={"success": False, "message": "Email already registered"}
+            )
+        
+        # Save user
+        user_id = str(uuid.uuid4())
+        temp_users[email] = {
+            "id": user_id,
+            "email": email,
+            "password": password,
+            "name": name
+        }
+        
+        # Create token
+        token = create_access_token(data={"sub": email, "user_id": user_id})
+        
+        return {
+            "success": True,
+            "message": "User registered successfully",
+            "token": token,
+            "token_type": "bearer",
+            "user": {
+                "id": user_id,
+                "email": email,
+                "name": name
+            }
+        }
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "message": str(e)}
+        )
 
 @app.post("/auth/login")
-async def login(email: str, password: str):
-    """Login user and return token"""
-    token = create_access_token(data={"sub": email})
-    return {"access_token": token, "token_type": "bearer"}
+async def login(request: LoginRequest):
+    """Login user - accepts JSON body"""
+    try:
+        email = request.email
+        password = request.password
+        
+        # Find user
+        user = temp_users.get(email)
+        if not user or user.get("password") != password:
+            return JSONResponse(
+                status_code=401,
+                content={"success": False, "message": "Invalid email or password"}
+            )
+        
+        # Create token
+        token = create_access_token(data={"sub": email, "user_id": user["id"]})
+        
+        return {
+            "success": True,
+            "message": "Login successful",
+            "token": token,
+            "token_type": "bearer",
+            "user": {
+                "id": user["id"],
+                "email": email,
+                "name": user.get("name")
+            }
+        }
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "message": str(e)}
+        )
 
 @app.get("/users/me")
 async def get_current_user(user_id: str = Depends(verify_token)):
     """Get current user info"""
-    return {"user_id": user_id, "email": user_id}
+    user = None
+    for u in temp_users.values():
+        if u["id"] == user_id:
+            user = u
+            break
+    
+    if not user:
+        return JSONResponse(
+            status_code=404,
+            content={"success": False, "message": "User not found"}
+        )
+    
+    return {
+        "success": True,
+        "user": {
+            "id": user["id"],
+            "email": user["email"],
+            "name": user.get("name")
+        }
+    }
 
 # ============================================
 # RUN SERVER
