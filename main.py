@@ -530,11 +530,13 @@ async def get_skin_types():
             for skin_id, data in SKIN_CARE_DATA.items()
         ]
     }
-
 # ============================================
 # RUN SERVER
 # ============================================
+
 if __name__ == "__main__":
+    import os
+
     print("=" * 60)
     print("🌟 SKINGLOW AI PRODUCTION BACKEND")
     print("=" * 60)
@@ -543,59 +545,12 @@ if __name__ == "__main__":
     print(f"✅ Skin types: {len(SKIN_CARE_DATA)}")
     print("=" * 60)
     print("🚀 Server starting...")
-    print("📍 http://localhost:8000")
-    print("📚 API Docs: http://localhost:8000/docs")
-    print("=" * 60)
-    
- port = int(os.getenv("PORT", 8000))
 
-uvicorn.run(
-    app,
-    host="0.0.0.0",
-    port=port,
-    log_level="info"
-)
-    
-SECRET_KEY = os.getenv('SECRET_KEY', 'your-secret-key-here')
-ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 30
+    port = int(os.getenv("PORT", 8000))  # ✅ FIXED INDENTATION
 
-security = HTTPBearer()
-
-def create_access_token(data: dict, expires_delta: timedelta = None):
-    to_encode = data.copy()
-    if expires_delta:
-        expire = datetime.utcnow() + expires_delta
-    else:
-        expire = datetime.utcnow() + timedelta(minutes=15)
-    to_encode.update({"exp": expire})
-    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
-    return encoded_jwt
-
-def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
-    token = credentials.credentials
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        user_id: str = payload.get("sub")
-        if user_id is None:
-            raise HTTPException(status_code=401, detail="Invalid token")
-        return user_id
-    except jwt.PyJWTError:
-        raise HTTPException(status_code=401, detail="Invalid token")
-
-@app.post("/auth/register")
-async def register(email: str, password: str):
-    """Register new user"""
-    # Implementation here
-    pass
-
-@app.post("/auth/login")
-async def login(email: str, password: str):
-    """Login user and return token"""
-    # Implementation here
-    pass
-
-@app.get("/users/me")
-async def get_current_user(user_id: str = Depends(verify_token)):
-    """Get current user info"""
-    return {"user_id": user_id, "email": "user@example.com"}
+    uvicorn.run(
+        "main:app",
+        host="0.0.0.0",
+        port=port,
+        log_level="info"
+    )
