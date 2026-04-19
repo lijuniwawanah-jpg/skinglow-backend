@@ -23,12 +23,10 @@ import hashlib
 
 # Load environment variables
 load_dotenv()
+
 # ============================================
 # DATABASE SETUP (SQLite)
 # ============================================
-
-import sqlite3
-import hashlib
 
 DATABASE_FILE = "skinglow.db"
 
@@ -143,6 +141,7 @@ def init_db():
 
 # Initialize database
 init_db()
+
 # ============================================
 # INITIALIZE FASTAPI
 # ============================================
@@ -187,11 +186,14 @@ def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
     token = credentials.credentials
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        user_id: str = payload.get("sub")
+        # First try to get user_id, if not found try 'sub'
+        user_id = payload.get("user_id") or payload.get("sub")
         if user_id is None:
-            raise HTTPException(status_code=401, detail="Invalid token")
+            raise HTTPException(status_code=401, detail="Invalid token: no user identifier")
         return user_id
-    except jwt.PyJWTError:
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Token expired")
+    except jwt.InvalidTokenError:
         raise HTTPException(status_code=401, detail="Invalid token")
 
 # ============================================
@@ -712,7 +714,12 @@ async def register(request: RegisterRequest):
             conn.commit()
         
         # Create token
-        token = create_access_token(data={"sub": email, "user_id": user_id})
+        token_data = {
+            "sub": email,
+            "user_id": user_id,
+            "exp": datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        }
+        token = jwt.encode(token_data, SECRET_KEY, algorithm=ALGORITHM)
         
         return {
             "success": True,
@@ -740,7 +747,7 @@ async def login(request: LoginRequest):
         
         with get_db() as conn:
             user = conn.execute(
-                "SELECT id, email, password_hash, name FROM users WHERE email = ?",
+                "SELECT id, email, password_hash, name, role FROM users WHERE email = ?",
                 (email,)
             ).fetchone()
             
@@ -757,10 +764,18 @@ async def login(request: LoginRequest):
                 )
             
             user_id = user["id"]
+            user_email = user["email"]
             user_name = user["name"]
+            user_role = user["role"] if user["role"] else "customer"
         
-        # Create token
-        token = create_access_token(data={"sub": email, "user_id": user_id})
+        # Create token with both sub and user_id
+        token_data = {
+            "sub": user_email,
+            "user_id": user_id,
+            "role": user_role,
+            "exp": datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        }
+        token = jwt.encode(token_data, SECRET_KEY, algorithm=ALGORITHM)
         
         return {
             "success": True,
@@ -769,11 +784,13 @@ async def login(request: LoginRequest):
             "token_type": "bearer",
             "user": {
                 "id": user_id,
-                "email": email,
-                "name": user_name
+                "email": user_email,
+                "name": user_name,
+                "role": user_role
             }
         }
     except Exception as e:
+        print(f"Login error: {str(e)}")
         return JSONResponse(
             status_code=500,
             content={"success": False, "message": str(e)}
@@ -785,7 +802,7 @@ async def get_current_user(user_id: str = Depends(verify_token)):
     try:
         with get_db() as conn:
             user = conn.execute(
-                "SELECT id, email, name FROM users WHERE id = ?",
+                "SELECT id, email, name, role FROM users WHERE id = ?",
                 (user_id,)
             ).fetchone()
             
@@ -800,7 +817,8 @@ async def get_current_user(user_id: str = Depends(verify_token)):
                 "user": {
                     "id": user["id"],
                     "email": user["email"],
-                    "name": user["name"]
+                    "name": user["name"],
+                    "role": user["role"]
                 }
             }
     except Exception as e:
@@ -880,6 +898,7 @@ async def get_analysis_history(user_id: str = Depends(verify_token)):
             status_code=500,
             content={"success": False, "message": str(e)}
         )
+
 # ============================================
 # NEW ENDPOINTS FOR ROLE MANAGEMENT
 # ============================================
@@ -895,7 +914,18 @@ async def set_user_role(
         phone = request.get('phone')
         address = request.get('address')
         
+        print(f"Setting role for user_id: {user_id}, role: {role}")  # Debug
+        
         with get_db() as conn:
+            # Check if user exists
+            user = conn.execute("SELECT id FROM users WHERE id = ?", (user_id,)).fetchone()
+            if not user:
+                return JSONResponse(
+                    status_code=404,
+                    content={"success": False, "message": "User not found"}
+                )
+            
+            # Update user
             conn.execute(
                 "UPDATE users SET role = ?, phone = ?, address = ? WHERE id = ?",
                 (role, phone, address, user_id)
@@ -908,6 +938,7 @@ async def set_user_role(
             "role": role
         }
     except Exception as e:
+        print(f"Error setting role: {str(e)}")
         return JSONResponse(
             status_code=500,
             content={"success": False, "message": str(e)}
@@ -918,7 +949,10 @@ async def get_user_role(user_id: str = Depends(verify_token)):
     """Get user role"""
     try:
         with get_db() as conn:
-            user = conn.execute("SELECT role, phone, address FROM users WHERE id = ?", (user_id,)).fetchone()
+            user = conn.execute(
+                "SELECT role, phone, address FROM users WHERE id = ?",
+                (user_id,)
+            ).fetchone()
         
         return {
             "success": True,
@@ -927,10 +961,12 @@ async def get_user_role(user_id: str = Depends(verify_token)):
             "address": user["address"] if user else None
         }
     except Exception as e:
+        print(f"Error getting role: {str(e)}")
         return JSONResponse(
             status_code=500,
             content={"success": False, "message": str(e)}
         )
+
 # ============================================
 # RUN SERVER
 # ============================================
