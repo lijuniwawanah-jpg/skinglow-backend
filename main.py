@@ -867,7 +867,57 @@ async def get_analysis_history(user_id: str = Depends(verify_token)):
             status_code=500,
             content={"success": False, "message": str(e)}
         )
+# ============================================
+# NEW ENDPOINTS FOR ROLE MANAGEMENT
+# ============================================
 
+@app.post("/user/set-role")
+async def set_user_role(
+    request: dict,
+    user_id: str = Depends(verify_token)
+):
+    """Set user role (customer or store owner)"""
+    try:
+        role = request.get('role')
+        phone = request.get('phone')
+        address = request.get('address')
+        
+        with get_db() as conn:
+            conn.execute(
+                "UPDATE users SET role = ?, phone = ?, address = ? WHERE id = ?",
+                (role, phone, address, user_id)
+            )
+            conn.commit()
+        
+        return {
+            "success": True,
+            "message": f"Role updated to {role}",
+            "role": role
+        }
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "message": str(e)}
+        )
+
+@app.get("/user/role")
+async def get_user_role(user_id: str = Depends(verify_token)):
+    """Get user role"""
+    try:
+        with get_db() as conn:
+            user = conn.execute("SELECT role, phone, address FROM users WHERE id = ?", (user_id,)).fetchone()
+        
+        return {
+            "success": True,
+            "role": user["role"] if user else "customer",
+            "phone": user["phone"] if user else None,
+            "address": user["address"] if user else None
+        }
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "message": str(e)}
+        )
 # ============================================
 # RUN SERVER
 # ============================================
