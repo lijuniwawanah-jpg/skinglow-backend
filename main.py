@@ -968,6 +968,428 @@ async def get_user_role(user_id: str = Depends(verify_token)):
         )
 
 # ============================================
+# STORE MANAGEMENT ENDPOINTS
+# ============================================
+
+@app.get("/stores/my")
+async def get_my_store(user_id: str = Depends(verify_token)):
+    """Get store owned by current user"""
+    try:
+        with get_db() as conn:
+            store = conn.execute(
+                "SELECT * FROM stores WHERE owner_id = ?",
+                (user_id,)
+            ).fetchone()
+            
+            if not store:
+                return JSONResponse(
+                    status_code=404,
+                    content={"success": False, "message": "Store not found", "store": None}
+                )
+            
+            return {
+                "success": True,
+                "store": dict(store)
+            }
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "message": str(e)}
+        )
+
+@app.get("/stores/nearby")
+async def get_nearby_stores(
+    lat: float,
+    lon: float,
+    radius: float = 10,
+    user_id: str = Depends(verify_token)
+):
+    """Get stores near a location"""
+    try:
+        from math import radians, sin, cos, sqrt, atan2
+        
+        def haversine(lat1, lon1, lat2, lon2):
+            R = 6371
+            lat1, lon1, lat2, lon2 = map(radians, [lat1, lon1, lat2, lon2])
+            dlat = lat2 - lat1
+            dlon = lon2 - lon1
+            a = sin(dlat/2)**2 + cos(lat1) * cos(lat2) * sin(dlon/2)**2
+            c = 2 * atan2(sqrt(a), sqrt(1-a))
+            return R * c
+        
+        with get_db() as conn:
+            stores = conn.execute("SELECT * FROM stores WHERE is_active = 1").fetchall()
+        
+        nearby = []
+        for store in stores:
+            distance = haversine(lat, lon, store["latitude"], store["longitude"])
+            if distance <= radius:
+                nearby.append({
+                    "id": store["id"],
+                    "name": store["name"],
+                    "address": store["address"],
+                    "distance_km": round(distance, 2),
+                    "phone": store["phone"],
+                    "rating": store["rating"]
+                })
+        
+        nearby.sort(key=lambda x: x["distance_km"])
+        
+        return {
+            "success": True,
+            "stores": nearby,
+            "user_location": {"lat": lat, "lon": lon}
+        }
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "message": str(e)}
+        )
+
+@app.get("/stores/stats")
+async def get_store_stats(user_id: str = Depends(verify_token)):
+    """Get store statistics"""
+    try:
+        with get_db() as conn:
+            # Get store id
+            store = conn.execute("SELECT id FROM stores WHERE owner_id = ?", (user_id,)).fetchone()
+            
+            if not store:
+                return {
+                    "success": True,
+                    "total_products": 0,
+                    "total_orders": 0,
+                    "total_revenue": 0,
+                    "pending_orders": 0
+                }
+            
+            store_id = store["id"]
+            
+            # Count products
+            products = conn.execute("SELECT COUNT(*) as count FROM products WHERE store_id = ?", (store_id,)).fetchone()
+            
+            # Count orders
+            orders = conn.execute("SELECT COUNT(*) as count FROM orders WHERE store_id = ?", (store_id,)).fetchone()
+            
+            # Calculate revenue
+            revenue = conn.execute("SELECT SUM(total_amount) as total FROM orders WHERE store_id = ? AND status = 'delivered'", (store_id,)).fetchone()
+            
+            # Count pending orders
+            pending = conn.execute("SELECT COUNT(*) as count FROM orders WHERE store_id = ? AND status = 'pending'", (store_id,)).fetchone()
+            
+            return {
+                "success": True,
+                "total_products": products["count"] if products else 0,
+                "total_orders": orders["count"] if orders else 0,
+                "total_revenue": revenue["total"] if revenue and revenue["total"] else 0,
+                "pending_orders": pending["count"] if pending else 0
+            }
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "message": str(e)}
+        )
+
+@app.post("/stores/create")
+async def create_store(
+    request: dict,
+    user_id: str = Depends(verify_token)
+):
+    """Create a new store"""
+    try:
+        name = request.get('name')
+        description = request.get('description')
+        address = request.get('address')
+        latitude = request.get('latitude')
+        longitude = request.get('longitude')
+        phone = request.get('phone')
+        
+        # Check if user already has a store
+        with get_db() as conn:
+            existing = conn.execute("SELECT id FROM stores WHERE owner_id = ?", (user_id,)).fetchone()
+            if existing:
+                return JSONResponse(
+                    status_code=400,
+                    content={"success": False, "message": "You already have a store"}
+                )
+            
+            store_id = str(uuid.uuid4())
+            conn.execute(
+                """INSERT INTO stores (id, owner_id, name, description, address, latitude, longitude, phone) 
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (store_id, user_id, name, description, address, latitude, longitude, phone)
+            )
+            conn.commit()
+        
+        return {
+            "success": True,
+            "message": "Store created successfully",
+            "store_id": store_id
+        }
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "message": str(e)}
+        )
+
+# ============================================
+# PRODUCT MANAGEMENT ENDPOINTS
+# ============================================
+
+@app.post("/products/add")
+async def add_product(
+    request: dict,
+    user_id: str = Depends(verify_token)
+):
+    """Add product to store"""
+    try:
+        name = request.get('name')
+        description = request.get('description')
+        price = request.get('price')
+        category = request.get('category')
+        skin_type = request.get('skin_type')
+        stock = request.get('stock', 0)
+        
+        with get_db() as conn:
+            # Get user's store
+            store = conn.execute("SELECT id FROM stores WHERE owner_id = ?", (user_id,)).fetchone()
+            if not store:
+                return JSONResponse(
+                    status_code=404,
+                    content={"success": False, "message": "Store not found"}
+                )
+            
+            product_id = str(uuid.uuid4())
+            conn.execute(
+                """INSERT INTO products (id, store_id, name, description, price, category, skin_type, stock) 
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (product_id, store["id"], name, description, price, category, skin_type, stock)
+            )
+            conn.commit()
+        
+        return {
+            "success": True,
+            "message": "Product added successfully",
+            "product_id": product_id
+        }
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "message": str(e)}
+        )
+
+@app.get("/products/my")
+async def get_my_products(user_id: str = Depends(verify_token)):
+    """Get products from user's store"""
+    try:
+        with get_db() as conn:
+            store = conn.execute("SELECT id FROM stores WHERE owner_id = ?", (user_id,)).fetchone()
+            if not store:
+                return {
+                    "success": True,
+                    "products": []
+                }
+            
+            products = conn.execute(
+                "SELECT * FROM products WHERE store_id = ? ORDER BY created_at DESC",
+                (store["id"],)
+            ).fetchall()
+        
+        return {
+            "success": True,
+            "products": [dict(p) for p in products]
+        }
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "message": str(e)}
+        )
+
+@app.get("/products/store")
+async def get_store_products(user_id: str = Depends(verify_token)):
+    """Alias for get_my_products"""
+    return await get_my_products(user_id)
+
+@app.get("/products/recommend")
+async def get_recommended_products(
+    lat: float,
+    lon: float,
+    skin_type: str = "normal",
+    user_id: str = Depends(verify_token)
+):
+    """Get products recommended based on skin type and location"""
+    try:
+        from math import radians, sin, cos, sqrt, atan2
+        
+        def haversine(lat1, lon1, lat2, lon2):
+            R = 6371
+            lat1, lon1, lat2, lon2 = map(radians, [lat1, lon1, lat2, lon2])
+            dlat = lat2 - lat1
+            dlon = lon2 - lon1
+            a = sin(dlat/2)**2 + cos(lat1) * cos(lat2) * sin(dlon/2)**2
+            c = 2 * atan2(sqrt(a), sqrt(1-a))
+            return R * c
+        
+        with get_db() as conn:
+            stores = conn.execute("SELECT id, name, latitude, longitude FROM stores WHERE is_active = 1").fetchall()
+        
+        nearby_store_ids = []
+        for store in stores:
+            distance = haversine(lat, lon, store["latitude"], store["longitude"])
+            if distance <= 10:
+                nearby_store_ids.append(store["id"])
+        
+        if not nearby_store_ids:
+            return {"success": True, "products": []}
+        
+        placeholders = ','.join('?' * len(nearby_store_ids))
+        with get_db() as conn:
+            products = conn.execute(
+                f"""SELECT p.*, s.name as store_name, s.address 
+                   FROM products p 
+                   JOIN stores s ON p.store_id = s.id 
+                   WHERE p.store_id IN ({placeholders}) 
+                   AND p.skin_type = ? 
+                   AND p.is_active = 1
+                   AND p.stock > 0""",
+                nearby_store_ids + [skin_type]
+            ).fetchall()
+        
+        return {
+            "success": True,
+            "products": [dict(p) for p in products]
+        }
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "message": str(e)}
+        )
+
+# ============================================
+# ORDER MANAGEMENT ENDPOINTS
+# ============================================
+
+@app.get("/orders/my-orders")
+async def get_my_orders(user_id: str = Depends(verify_token)):
+    """Get user's orders"""
+    try:
+        with get_db() as conn:
+            orders = conn.execute(
+                """SELECT o.*, s.name as store_name 
+                   FROM orders o 
+                   JOIN stores s ON o.store_id = s.id 
+                   WHERE o.user_id = ? 
+                   ORDER BY o.created_at DESC""",
+                (user_id,)
+            ).fetchall()
+        
+        return {
+            "success": True,
+            "orders": [dict(o) for o in orders]
+        }
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "message": str(e)}
+        )
+
+@app.get("/orders/store-orders")
+async def get_store_orders(user_id: str = Depends(verify_token)):
+    """Get orders for user's store"""
+    try:
+        with get_db() as conn:
+            store = conn.execute("SELECT id FROM stores WHERE owner_id = ?", (user_id,)).fetchone()
+            if not store:
+                return {"success": True, "orders": []}
+            
+            orders = conn.execute(
+                """SELECT o.*, u.name as customer_name, u.email as customer_email
+                   FROM orders o 
+                   JOIN users u ON o.user_id = u.id 
+                   WHERE o.store_id = ? 
+                   ORDER BY o.created_at DESC""",
+                (store["id"],)
+            ).fetchall()
+        
+        return {
+            "success": True,
+            "orders": [dict(o) for o in orders]
+        }
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "message": str(e)}
+        )
+
+@app.put("/orders/{order_id}/status")
+async def update_order_status(
+    order_id: str,
+    request: dict,
+    user_id: str = Depends(verify_token)
+):
+    """Update order status"""
+    try:
+        status = request.get('status')
+        
+        with get_db() as conn:
+            # Check if user owns the store
+            order = conn.execute("SELECT store_id FROM orders WHERE id = ?", (order_id,)).fetchone()
+            if not order:
+                return JSONResponse(
+                    status_code=404,
+                    content={"success": False, "message": "Order not found"}
+                )
+            
+            store = conn.execute("SELECT owner_id FROM stores WHERE id = ?", (order["store_id"],)).fetchone()
+            if store["owner_id"] != user_id:
+                return JSONResponse(
+                    status_code=403,
+                    content={"success": False, "message": "Not authorized"}
+                )
+            
+            conn.execute(
+                "UPDATE orders SET status = ? WHERE id = ?",
+                (status, order_id)
+            )
+            conn.commit()
+        
+        return {
+            "success": True,
+            "message": f"Order status updated to {status}"
+        }
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "message": str(e)}
+        )
+
+# ============================================
+# USER STATS ENDPOINTS
+# ============================================
+
+@app.get("/users/stats")
+async def get_user_stats(user_id: str = Depends(verify_token)):
+    """Get user statistics"""
+    try:
+        with get_db() as conn:
+            # Count analyses
+            analyses = conn.execute("SELECT COUNT(*) as count FROM analyses WHERE user_id = ?", (user_id,)).fetchone()
+            
+            # Count orders
+            orders = conn.execute("SELECT COUNT(*) as count FROM orders WHERE user_id = ?", (user_id,)).fetchone()
+        
+        return {
+            "success": True,
+            "total_analyses": analyses["count"] if analyses else 0,
+            "total_orders": orders["count"] if orders else 0
+        }
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "message": str(e)}
+        )
+
+# ============================================
 # RUN SERVER
 # ============================================
 if __name__ == "__main__":
