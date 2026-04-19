@@ -25,56 +25,109 @@ import hashlib
 load_dotenv()
 
 # ============================================
-# DATABASE SETUP (SQLite) - MUST BE FIRST
+# DATABASE SETUP (SQLite) - Weka Hii MWANZONI
 # ============================================
+
+import sqlite3
+import hashlib
 
 DATABASE_FILE = "skinglow.db"
 
 def get_db():
-    """Get database connection"""
     conn = sqlite3.connect(DATABASE_FILE)
     conn.row_factory = sqlite3.Row
     return conn
 
-def hash_password(password: str) -> str:
-    """Hash password using SHA256"""
-    return hashlib.sha256(password.encode()).hexdigest()
-
 def init_db():
-    """Initialize database tables"""
-    try:
-        with get_db() as conn:
-            # Users table
-            conn.execute('''
-                CREATE TABLE IF NOT EXISTS users (
-                    id TEXT PRIMARY KEY,
-                    email TEXT UNIQUE NOT NULL,
-                    password_hash TEXT NOT NULL,
-                    name TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            ''')
-            
-            # Skin analyses table
-            conn.execute('''
-                CREATE TABLE IF NOT EXISTS analyses (
-                    id TEXT PRIMARY KEY,
-                    user_id TEXT NOT NULL,
-                    skin_type TEXT NOT NULL,
-                    confidence REAL NOT NULL,
-                    image_url TEXT,
-                    recommendations TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (user_id) REFERENCES users(id)
-                )
-            ''')
-            
-            conn.commit()
-            print("✅ Database initialized successfully!")
-    except Exception as e:
-        print(f"⚠️ Database init error: {e}")
+    with get_db() as conn:
+        # Users table (iliyopo)
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS users (
+                id TEXT PRIMARY KEY,
+                email TEXT UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL,
+                name TEXT,
+                role TEXT DEFAULT 'customer',
+                phone TEXT,
+                address TEXT,
+                latitude REAL,
+                longitude REAL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
+        # Stores table (MPYA - kwa wamiliki wa maduka)
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS stores (
+                id TEXT PRIMARY KEY,
+                owner_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                description TEXT,
+                address TEXT NOT NULL,
+                latitude REAL NOT NULL,
+                longitude REAL NOT NULL,
+                phone TEXT,
+                logo_url TEXT,
+                rating REAL DEFAULT 0,
+                is_active INTEGER DEFAULT 1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (owner_id) REFERENCES users(id)
+            )
+        ''')
+        
+        # Products table (MPYA - kwa bidhaa)
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS products (
+                id TEXT PRIMARY KEY,
+                store_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                description TEXT,
+                price REAL NOT NULL,
+                category TEXT,
+                skin_type TEXT,
+                image_url TEXT,
+                stock INTEGER DEFAULT 0,
+                rating REAL DEFAULT 0,
+                is_active INTEGER DEFAULT 1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (store_id) REFERENCES stores(id)
+            )
+        ''')
+        
+        # Orders table (MPYA - kwa maagizo)
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS orders (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                store_id TEXT NOT NULL,
+                status TEXT DEFAULT 'pending',
+                total_amount REAL NOT NULL,
+                delivery_address TEXT,
+                delivery_latitude REAL,
+                delivery_longitude REAL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(id),
+                FOREIGN KEY (store_id) REFERENCES stores(id)
+            )
+        ''')
+        
+        # Order items table
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS order_items (
+                id TEXT PRIMARY KEY,
+                order_id TEXT NOT NULL,
+                product_id TEXT NOT NULL,
+                quantity INTEGER NOT NULL,
+                price REAL NOT NULL,
+                FOREIGN KEY (order_id) REFERENCES orders(id),
+                FOREIGN KEY (product_id) REFERENCES products(id)
+            )
+        ''')
+        
+        conn.commit()
+        print("✅ Database initialized successfully!")
 
-# Initialize database
+# Call this when app starts
 init_db()
 
 # ============================================
