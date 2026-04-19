@@ -23,9 +23,8 @@ import hashlib
 
 # Load environment variables
 load_dotenv()
-
 # ============================================
-# DATABASE SETUP (SQLite) - Weka Hii MWANZONI
+# DATABASE SETUP (SQLite)
 # ============================================
 
 import sqlite3
@@ -38,9 +37,13 @@ def get_db():
     conn.row_factory = sqlite3.Row
     return conn
 
+def hash_password(password: str) -> str:
+    """Hash password using SHA256"""
+    return hashlib.sha256(password.encode()).hexdigest()
+
 def init_db():
     with get_db() as conn:
-        # Users table (iliyopo)
+        # Users table
         conn.execute('''
             CREATE TABLE IF NOT EXISTS users (
                 id TEXT PRIMARY KEY,
@@ -56,7 +59,18 @@ def init_db():
             )
         ''')
         
-        # Stores table (MPYA - kwa wamiliki wa maduka)
+        # Check if columns exist, if not add them
+        cursor = conn.execute("PRAGMA table_info(users)")
+        columns = [col[1] for col in cursor.fetchall()]
+        
+        if 'role' not in columns:
+            conn.execute("ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'customer'")
+        if 'phone' not in columns:
+            conn.execute("ALTER TABLE users ADD COLUMN phone TEXT")
+        if 'address' not in columns:
+            conn.execute("ALTER TABLE users ADD COLUMN address TEXT")
+        
+        # Stores table
         conn.execute('''
             CREATE TABLE IF NOT EXISTS stores (
                 id TEXT PRIMARY KEY,
@@ -75,7 +89,7 @@ def init_db():
             )
         ''')
         
-        # Products table (MPYA - kwa bidhaa)
+        # Products table
         conn.execute('''
             CREATE TABLE IF NOT EXISTS products (
                 id TEXT PRIMARY KEY,
@@ -94,7 +108,7 @@ def init_db():
             )
         ''')
         
-        # Orders table (MPYA - kwa maagizo)
+        # Orders table
         conn.execute('''
             CREATE TABLE IF NOT EXISTS orders (
                 id TEXT PRIMARY KEY,
@@ -127,9 +141,8 @@ def init_db():
         conn.commit()
         print("✅ Database initialized successfully!")
 
-# Call this when app starts
+# Initialize database
 init_db()
-
 # ============================================
 # INITIALIZE FASTAPI
 # ============================================
