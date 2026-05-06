@@ -1388,7 +1388,61 @@ async def get_user_stats(user_id: str = Depends(verify_token)):
             status_code=500,
             content={"success": False, "message": str(e)}
         )
+# ============================================
+# AI CHAT ENDPOINT (OpenAI)
+# ============================================
 
+import openai
+from pydantic import BaseModel
+
+class ChatRequest(BaseModel):
+    message: str
+
+# Get OpenAI API key from environment
+OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', '')
+
+@app.post("/chat")
+async def chat(request: ChatRequest, user_id: str = Depends(verify_token)):
+    """AI Chat Assistant using OpenAI"""
+    
+    if not OPENAI_API_KEY:
+        return {
+            "success": False,
+            "response": "AI chat is currently unavailable. Please try again later."
+        }
+    
+    try:
+        openai.api_key = OPENAI_API_KEY
+        
+        # System prompt for skincare expert
+        system_prompt = """You are a professional skincare advisor specializing in African skin. 
+        Give short, helpful, and practical advice. Be friendly and knowledgeable.
+        Focus on natural remedies, sunscreen use, and proper skincare routines.
+        Keep responses under 150 words."""
+        
+        response = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": request.message}
+            ],
+            max_tokens=300,
+            temperature=0.7
+        )
+        
+        ai_response = response.choices[0].message.content
+        
+        return {
+            "success": True,
+            "response": ai_response
+        }
+        
+    except Exception as e:
+        print(f"OpenAI error: {e}")
+        return {
+            "success": False,
+            "response": "Sorry, I'm having trouble connecting. Please try again."
+        }
 # ============================================
 # RUN SERVER
 # ============================================
