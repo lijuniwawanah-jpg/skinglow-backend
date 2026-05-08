@@ -1389,43 +1389,58 @@ async def get_user_stats(user_id: str = Depends(verify_token)):
             content={"success": False, "message": str(e)}
         )
 # ============================================
-# AI CHAT ENDPOINT (OpenAI 0.28.0 Compatible)
+# OPENAI CHAT ENDPOINT (Working Version)
 # ============================================
 
 import openai
 
 @app.post("/chat")
 async def chat(request: dict, user_id: str = Depends(verify_token)):
-    """AI Chat Assistant using OpenAI"""
+    """AI Chat Assistant using OpenAI GPT-3.5"""
     
     user_message = request.get('message', '')
     
     if not user_message:
         return {
             "success": False,
-            "response": "Please ask me something about skincare."
+            "response": "Tafadhali uliza swali kuhusu ngozi yako."
         }
     
-    # Get OpenAI API key from environment
+    # Get API key from environment
     openai.api_key = os.getenv('OPENAI_API_KEY', '')
     
     if not openai.api_key:
+        print("⚠️ OPENAI_API_KEY not set in environment")
         return {
             "success": False,
-            "response": "AI chat is currently unavailable. Please try again later."
+            "response": "AI chat is not configured yet. Please try again later."
         }
     
     try:
-        # System prompt
+        # System prompt - tells AI how to behave
         system_prompt = """You are 'SkinSight AI', a professional African skincare advisor.
-        Give short, helpful, and practical advice (under 150 words).
-        Be friendly and knowledgeable.
-        Focus on skincare for African skin types.
-        Always encourage sunscreen use."""
         
-        # Call OpenAI API (old syntax for version 0.28.0)
+RULES:
+- Give short, practical advice (under 150 words)
+- Be friendly and warm
+- Always encourage sunscreen use (SPF 30+)
+- Recommend affordable products available in Tanzania/East Africa
+- Use simple English (bonge la Kiswahili si vibaya)
+- Never give medical diagnoses
+- Refer to dermatologists for serious issues
+
+TOPICS YOU CAN HELP WITH:
+- Skin types (dry, oily, combination, sensitive, normal)
+- Sun protection (UV index in Tanzania is extreme)
+- Daily skincare routines
+- Natural remedies (aloe vera, shea butter, coconut oil)
+- Product recommendations
+
+If user asks non-skincare question, politely redirect to skincare."""
+        
+        # Call OpenAI API
         response = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo",  # Tumia gpt-3.5 kwanza, then upgrade to gpt-4
+            model="gpt-3.5-turbo",  # Tumia gpt-3.5-turbo kwanza (cheaper)
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_message}
@@ -1446,7 +1461,7 @@ async def chat(request: dict, user_id: str = Depends(verify_token)):
         print(f"OpenAI error: {str(e)}")
         return {
             "success": False,
-            "response": "Sorry, I'm having trouble connecting. Please try again."
+            "response": "Samahani, nahitaji muda kidogo. Tafadhali jaribu tena."
         }
 # ============================================
 # RUN SERVER
