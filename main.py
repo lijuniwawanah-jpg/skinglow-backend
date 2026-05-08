@@ -1389,11 +1389,10 @@ async def get_user_stats(user_id: str = Depends(verify_token)):
             content={"success": False, "message": str(e)}
         )
 # ============================================
-# AI CHAT ENDPOINT (OpenAI Integration)
+# AI CHAT ENDPOINT (OpenAI 0.28.0 Compatible)
 # ============================================
 
-from openai import OpenAI
-import os
+import openai
 
 @app.post("/chat")
 async def chat(request: dict, user_id: str = Depends(verify_token)):
@@ -1408,34 +1407,25 @@ async def chat(request: dict, user_id: str = Depends(verify_token)):
         }
     
     # Get OpenAI API key from environment
-    OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', '')
+    openai.api_key = os.getenv('OPENAI_API_KEY', '')
     
-    if not OPENAI_API_KEY:
+    if not openai.api_key:
         return {
             "success": False,
             "response": "AI chat is currently unavailable. Please try again later."
         }
     
     try:
-        # Initialize OpenAI client
-        client = OpenAI(api_key=OPENAI_API_KEY)
-        
-        # System prompt - tells AI how to behave
-        system_prompt = """You are 'SkinSight AI', a professional African skincare advisor. 
-        You specialize in African skin types and concerns. 
+        # System prompt
+        system_prompt = """You are 'SkinSight AI', a professional African skincare advisor.
         Give short, helpful, and practical advice (under 150 words).
-        Be friendly, warm, and knowledgeable.
-        Focus on:
-        - Skincare routines for African skin
-        - Natural remedies available in Africa
-        - Sun protection (vitafaa kwa hali ya jua kali Afrika)
-        - Product recommendations
-        Always encourage sunscreen use and healthy habits.
-        If asked about something not skincare related, politely redirect to skincare."""
+        Be friendly and knowledgeable.
+        Focus on skincare for African skin types.
+        Always encourage sunscreen use."""
         
-        # Call OpenAI API
-        response = client.chat.completions.create(
-            model="gpt-3.5-turbo",  # Au "gpt-4" kama una access
+        # Call OpenAI API (old syntax for version 0.28.0)
+        response = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo",  # Tumia gpt-3.5 kwanza, then upgrade to gpt-4
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_message}
@@ -1448,7 +1438,8 @@ async def chat(request: dict, user_id: str = Depends(verify_token)):
         
         return {
             "success": True,
-            "response": ai_response
+            "response": ai_response,
+            "model": "gpt-3.5-turbo"
         }
         
     except Exception as e:
