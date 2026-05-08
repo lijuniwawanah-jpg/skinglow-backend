@@ -1389,21 +1389,26 @@ async def get_user_stats(user_id: str = Depends(verify_token)):
             content={"success": False, "message": str(e)}
         )
 # ============================================
-# AI CHAT ENDPOINT (OpenAI)
+# AI CHAT ENDPOINT (OpenAI Integration)
 # ============================================
 
-import openai
-from pydantic import BaseModel
-
-class ChatRequest(BaseModel):
-    message: str
-
-# Get OpenAI API key from environment
-OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', '')
+from openai import OpenAI
+import os
 
 @app.post("/chat")
-async def chat(request: ChatRequest, user_id: str = Depends(verify_token)):
+async def chat(request: dict, user_id: str = Depends(verify_token)):
     """AI Chat Assistant using OpenAI"""
+    
+    user_message = request.get('message', '')
+    
+    if not user_message:
+        return {
+            "success": False,
+            "response": "Please ask me something about skincare."
+        }
+    
+    # Get OpenAI API key from environment
+    OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', '')
     
     if not OPENAI_API_KEY:
         return {
@@ -1412,19 +1417,28 @@ async def chat(request: ChatRequest, user_id: str = Depends(verify_token)):
         }
     
     try:
-        openai.api_key = OPENAI_API_KEY
+        # Initialize OpenAI client
+        client = OpenAI(api_key=OPENAI_API_KEY)
         
-        # System prompt for skincare expert
-        system_prompt = """You are a professional skincare advisor specializing in African skin. 
-        Give short, helpful, and practical advice. Be friendly and knowledgeable.
-        Focus on natural remedies, sunscreen use, and proper skincare routines.
-        Keep responses under 150 words."""
+        # System prompt - tells AI how to behave
+        system_prompt = """You are 'SkinSight AI', a professional African skincare advisor. 
+        You specialize in African skin types and concerns. 
+        Give short, helpful, and practical advice (under 150 words).
+        Be friendly, warm, and knowledgeable.
+        Focus on:
+        - Skincare routines for African skin
+        - Natural remedies available in Africa
+        - Sun protection (vitafaa kwa hali ya jua kali Afrika)
+        - Product recommendations
+        Always encourage sunscreen use and healthy habits.
+        If asked about something not skincare related, politely redirect to skincare."""
         
-        response = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo",
+        # Call OpenAI API
+        response = client.chat.completions.create(
+            model="gpt-3.5-turbo",  # Au "gpt-4" kama una access
             messages=[
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": request.message}
+                {"role": "user", "content": user_message}
             ],
             max_tokens=300,
             temperature=0.7
@@ -1438,7 +1452,7 @@ async def chat(request: ChatRequest, user_id: str = Depends(verify_token)):
         }
         
     except Exception as e:
-        print(f"OpenAI error: {e}")
+        print(f"OpenAI error: {str(e)}")
         return {
             "success": False,
             "response": "Sorry, I'm having trouble connecting. Please try again."
