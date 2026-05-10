@@ -1463,44 +1463,20 @@ If user asks non-skincare question, politely redirect to skincare."""
             "success": False,
             "response": "Samahani, nahitaji muda kidogo. Tafadhali jaribu tena."
         }
-
-    # ============================================
+# ============================================
 # PROFILE & HISTORY ENDPOINTS
 # ============================================
 
 @app.get("/analyses/history")
 async def get_analysis_history(user_id: str = Depends(verify_token)):
-    """Get user's analysis history"""
+    """Get user's analysis history from database"""
     try:
         with get_db() as conn:
             analyses = conn.execute(
-                "SELECT id, skin_type, confidence, recommendations, recommended_oils, created_at FROM analyses WHERE user_id = ? ORDER BY created_at DESC",
+                """SELECT id, skin_type, confidence, recommendations, recommended_oils, created_at 
+                   FROM analyses WHERE user_id = ? ORDER BY created_at DESC""",
                 (user_id,)
             ).fetchall()
-        
-        # Calculate skin type trends
-        skin_type_counts = {}
-        for a in analyses:
-            skin_type = a["skin_type"]
-            skin_type_counts[skin_type] = skin_type_counts.get(skin_type, 0) + 1
-        
-        # Calculate active days
-        active_days = len(set([a["created_at"][:10] for a in analyses])) if analyses else 0
-        
-        # Calculate skin health score (mock for now, can be improved)
-        skin_health_score = 85
-        if analyses:
-            latest = analyses[0]
-            if latest["skin_type"] == "normal":
-                skin_health_score = 92
-            elif latest["skin_type"] == "dry":
-                skin_health_score = 78
-            elif latest["skin_type"] == "oily":
-                skin_health_score = 75
-            elif latest["skin_type"] == "combination":
-                skin_health_score = 82
-            elif latest["skin_type"] == "sensitive":
-                skin_health_score = 70
         
         return {
             "success": True,
@@ -1509,8 +1485,8 @@ async def get_analysis_history(user_id: str = Depends(verify_token)):
                     "id": a["id"],
                     "skin_type": a["skin_type"],
                     "confidence": a["confidence"],
-                    "recommendations": a["recommendations"].split(",") if a["recommendations"] else [],
-                    "recommended_oils": a["recommended_oils"].split(",") if a["recommended_oils"] else [],
+                    "recommendations": a["recommendations"].split("|") if a["recommendations"] else [],
+                    "recommended_oils": a["recommended_oils"].split("|") if a["recommended_oils"] else [],
                     "created_at": a["created_at"]
                 }
                 for a in analyses
@@ -1524,14 +1500,23 @@ async def get_analysis_history(user_id: str = Depends(verify_token)):
 
 @app.get("/users/stats")
 async def get_user_stats(user_id: str = Depends(verify_token)):
-    """Get user statistics"""
+    """Get user statistics from database"""
     try:
         with get_db() as conn:
             # Get all analyses
             analyses = conn.execute(
-                "SELECT skin_type, confidence, created_at FROM analyses WHERE user_id = ? ORDER BY created_at DESC",
+                "SELECT skin_type, confidence, created_at FROM analyses WHERE user_id = ?",
                 (user_id,)
             ).fetchall()
+            
+            if not analyses:
+                return {
+                    "success": True,
+                    "total_analyses": 0,
+                    "active_days": 0,
+                    "skin_health_score": 85,
+                    "skin_type_trends": {}
+                }
             
             # Calculate skin type trends
             skin_type_counts = {}
@@ -1540,32 +1525,26 @@ async def get_user_stats(user_id: str = Depends(verify_token)):
                 skin_type_counts[skin_type] = skin_type_counts.get(skin_type, 0) + 1
             
             # Calculate active days (unique dates)
-            active_days = len(set([a["created_at"][:10] for a in analyses])) if analyses else 0
-            
-            # Calculate average confidence
-            avg_confidence = sum(a["confidence"] for a in analyses) / len(analyses) if analyses else 0
+            active_days = len(set([a["created_at"][:10] for a in analyses]))
             
             # Calculate skin health score based on latest analysis
-            skin_health_score = 85
-            if analyses:
-                latest = analyses[0]
-                skin_type_scores = {
-                    "normal": 92,
-                    "combination": 82,
-                    "dry": 78,
-                    "oily": 75,
-                    "sensitive": 70
-                }
-                skin_health_score = skin_type_scores.get(latest["skin_type"], 85)
-                # Adjust by confidence
-                skin_health_score = int(skin_health_score * (latest["confidence"] * 0.3 + 0.7))
+            latest = analyses[0]
+            skin_type_scores = {
+                "normal": 92,
+                "combination": 82,
+                "dry": 78,
+                "oily": 75,
+                "sensitive": 70
+            }
+            skin_health_score = skin_type_scores.get(latest["skin_type"], 85)
+            # Adjust by confidence
+            skin_health_score = int(skin_health_score * (latest["confidence"] * 0.3 + 0.7))
             
             return {
                 "success": True,
                 "total_analyses": len(analyses),
                 "active_days": active_days,
                 "skin_health_score": skin_health_score,
-                "avg_confidence": round(avg_confidence, 2),
                 "skin_type_trends": skin_type_counts
             }
     except Exception as e:
