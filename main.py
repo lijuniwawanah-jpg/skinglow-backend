@@ -41,7 +41,9 @@ def hash_password(password: str) -> str:
 
 def init_db():
     with get_db() as conn:
-        # Users table
+        # ============================================
+        # USERS TABLE - WITH TIMESTAMPS
+        # ============================================
         conn.execute('''
             CREATE TABLE IF NOT EXISTS users (
                 id TEXT PRIMARY KEY,
@@ -53,11 +55,12 @@ def init_db():
                 address TEXT,
                 latitude REAL,
                 longitude REAL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                last_login TIMESTAMP
             )
         ''')
         
-        # Check if columns exist, if not add them
+        # Add missing columns if table already exists
         cursor = conn.execute("PRAGMA table_info(users)")
         columns = [col[1] for col in cursor.fetchall()]
         
@@ -67,8 +70,32 @@ def init_db():
             conn.execute("ALTER TABLE users ADD COLUMN phone TEXT")
         if 'address' not in columns:
             conn.execute("ALTER TABLE users ADD COLUMN address TEXT")
+        if 'last_login' not in columns:
+            conn.execute("ALTER TABLE users ADD COLUMN last_login TIMESTAMP")
         
-        # Stores table
+        # ============================================
+        # ANALYSES TABLE - FOR HISTORY
+        # ============================================
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS analyses (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                skin_type TEXT NOT NULL,
+                skin_name TEXT NOT NULL,
+                confidence REAL NOT NULL,
+                characteristics TEXT,
+                recommendations TEXT,
+                recommended_oils TEXT,
+                products TEXT,
+                method TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            )
+        ''')
+        
+        # ============================================
+        # STORES TABLE
+        # ============================================
         conn.execute('''
             CREATE TABLE IF NOT EXISTS stores (
                 id TEXT PRIMARY KEY,
@@ -87,7 +114,9 @@ def init_db():
             )
         ''')
         
-        # Products table
+        # ============================================
+        # PRODUCTS TABLE
+        # ============================================
         conn.execute('''
             CREATE TABLE IF NOT EXISTS products (
                 id TEXT PRIMARY KEY,
@@ -106,7 +135,9 @@ def init_db():
             )
         ''')
         
-        # Orders table
+        # ============================================
+        # ORDERS TABLE
+        # ============================================
         conn.execute('''
             CREATE TABLE IF NOT EXISTS orders (
                 id TEXT PRIMARY KEY,
@@ -123,7 +154,9 @@ def init_db():
             )
         ''')
         
-        # Order items table
+        # ============================================
+        # ORDER ITEMS TABLE
+        # ============================================
         conn.execute('''
             CREATE TABLE IF NOT EXISTS order_items (
                 id TEXT PRIMARY KEY,
@@ -136,8 +169,16 @@ def init_db():
             )
         ''')
         
+        # Create indexes for faster queries
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_analyses_user_id ON analyses(user_id)')
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_analyses_created_at ON analyses(created_at DESC)')
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)')
+        
         conn.commit()
         print("✅ Database initialized successfully!")
+        print("   - users table (with timestamps)")
+        print("   - analyses table (history)")
+        print("   - stores, products, orders tables")
 
 # Initialize database
 init_db()
@@ -186,7 +227,6 @@ def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
     token = credentials.credentials
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        # First try to get user_id, if not found try 'sub'
         user_id = payload.get("user_id") or payload.get("sub")
         if user_id is None:
             raise HTTPException(status_code=401, detail="Invalid token: no user identifier")
@@ -559,41 +599,50 @@ async def health_check():
         "timestamp": datetime.now().isoformat()
     }
 
-@app.post("/analyze")
-async def analyze_skin(file: UploadFile = File(...)):
-    """Analyze skin from uploaded image"""
-    
-    if not file.content_type.startswith('image/'):
-        raise HTTPException(status_code=400, detail="File must be an image")
-    
+@app.get("/skin-types")
+async def get_skin_types():
+    """Get all available skin types"""
+    return {
+        "skin_types": [
+            {"id": skin_id, "name": data["name"]}
+            for skin_id, data in SKIN_CARE_DATA.items()
+        ]
+    }
+
+@app.get("/location/{lat}/{lon}")
+async def get_location_name(lat: float, lon: float):
+    """Get location name from coordinates"""
+    city_name = "Unknown"
     try:
-        contents = await file.read()
-        
-        analysis = analyze_with_mediapipe(contents)
-        if not analysis:
-            analysis = analyze_with_fallback(contents)
-        
-        skin_type = analysis.get("skin_type", "normal")
-        confidence = analysis.get("confidence", 0.75)
-        method = analysis.get("method", "AI Analysis")
-        
-        skin_data = SKIN_CARE_DATA.get(skin_type, SKIN_CARE_DATA["normal"])
-        
-        return {
-            "success": True,
-            "skin_type": skin_type,
-            "skin_name": skin_data["name"],
-            "confidence": round(confidence, 2),
-            "characteristics": skin_data["characteristics"],
-            "recommendations": skin_data["recommendations"],
-            "recommended_oils": skin_data["oils"],
-            "products": skin_data["products"],
-            "method": method,
-            "timestamp": datetime.now().isoformat()
-        }
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
+        geocode_url = f"https://nominatim.openstreetmap.org/reverse?lat={lat}&lon={lon}&format=json"
+        response = requests.get(geocode_url, headers={'User-Agent': 'SkinGlowApp/1.0'}, timeout=5)
+        if response.status_code == 200:
+            data = response.json()
+            city_name = data.get('address', {}).get('city') or data.get('address', {}).get('town') or 'Unknown'
+    except:
+        pass
+    
+    return {
+        "success": True,
+        "city": city_name,
+        "latitude": lat,
+        "longitude": lon,
+        "timestamp": datetime.now().isoformat()
+    }
+
+@app.get("/sunscreen/{uv_index}")
+async def get_sunscreen(uv_index: float, skin_type: str = "normal"):
+    """Get sunscreen recommendation by UV index only"""
+    result = get_sunscreen_recommendation(uv_index, skin_type)
+    return {
+        "success": True,
+        **result,
+        "timestamp": datetime.now().isoformat()
+    }
+
+# ============================================
+# WEATHER ENDPOINTS
+# ============================================
 
 @app.get("/weather/{lat}/{lon}")
 async def get_weather(
@@ -608,7 +657,6 @@ async def get_weather(
     city_name = weather.get("city", "Unknown")
     if city_name == "Unknown" or city_name == "":
         try:
-            # Simple reverse geocoding
             geocode_url = f"https://nominatim.openstreetmap.org/reverse?lat={lat}&lon={lon}&format=json"
             response = requests.get(geocode_url, headers={'User-Agent': 'SkinGlowApp/1.0'}, timeout=5)
             if response.status_code == 200:
@@ -641,48 +689,6 @@ async def get_weather(
         "timestamp": datetime.now().isoformat()
     }
 
-@app.get("/location/{lat}/{lon}")
-async def get_location_name(lat: float, lon: float):
-    """Get location name from coordinates"""
-    city_name = "Unknown"
-    try:
-        geocode_url = f"https://nominatim.openstreetmap.org/reverse?lat={lat}&lon={lon}&format=json"
-        response = requests.get(geocode_url, headers={'User-Agent': 'SkinGlowApp/1.0'}, timeout=5)
-        if response.status_code == 200:
-            data = response.json()
-            city_name = data.get('address', {}).get('city') or data.get('address', {}).get('town') or 'Unknown'
-    except:
-        pass
-    
-    return {
-        "success": True,
-        "city": city_name,
-        "latitude": lat,
-        "longitude": lon,
-        "timestamp": datetime.now().isoformat()
-    }
-
-@app.get("/sunscreen/{uv_index}")
-async def get_sunscreen(uv_index: float, skin_type: str = "normal"):
-    """Get sunscreen recommendation by UV index only"""
-    
-    result = get_sunscreen_recommendation(uv_index, skin_type)
-    return {
-        "success": True,
-        **result,
-        "timestamp": datetime.now().isoformat()
-    }
-
-@app.get("/skin-types")
-async def get_skin_types():
-    """Get all available skin types"""
-    return {
-        "skin_types": [
-            {"id": skin_id, "name": data["name"]}
-            for skin_id, data in SKIN_CARE_DATA.items()
-        ]
-    }
-
 # ============================================
 # AUTH ENDPOINTS
 # ============================================
@@ -708,7 +714,7 @@ async def register(request: RegisterRequest):
             user_id = str(uuid.uuid4())
             password_hash = hash_password(password)
             conn.execute(
-                "INSERT INTO users (id, email, password_hash, name) VALUES (?, ?, ?, ?)",
+                "INSERT INTO users (id, email, password_hash, name, created_at) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)",
                 (user_id, email, password_hash, name)
             )
             conn.commit()
@@ -729,7 +735,8 @@ async def register(request: RegisterRequest):
             "user": {
                 "id": user_id,
                 "email": email,
-                "name": name
+                "name": name,
+                "member_since": datetime.now().isoformat()
             }
         }
     except Exception as e:
@@ -740,24 +747,18 @@ async def register(request: RegisterRequest):
 
 @app.post("/auth/login")
 async def login(request: LoginRequest):
-    """Login user"""
+    """Login user with last_login update"""
     try:
         email = request.email
         password = request.password
         
         with get_db() as conn:
             user = conn.execute(
-                "SELECT id, email, password_hash, name, role FROM users WHERE email = ?",
+                "SELECT id, email, password_hash, name, role, created_at FROM users WHERE email = ?",
                 (email,)
             ).fetchone()
             
-            if not user:
-                return JSONResponse(
-                    status_code=401,
-                    content={"success": False, "message": "Invalid email or password"}
-                )
-            
-            if user["password_hash"] != hash_password(password):
+            if not user or user["password_hash"] != hash_password(password):
                 return JSONResponse(
                     status_code=401,
                     content={"success": False, "message": "Invalid email or password"}
@@ -767,8 +768,13 @@ async def login(request: LoginRequest):
             user_email = user["email"]
             user_name = user["name"]
             user_role = user["role"] if user["role"] else "customer"
+            member_since = user["created_at"]
+            
+            # Update last_login
+            conn.execute("UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE id = ?", (user_id,))
+            conn.commit()
         
-        # Create token with both sub and user_id
+        # Create token
         token_data = {
             "sub": user_email,
             "user_id": user_id,
@@ -786,7 +792,8 @@ async def login(request: LoginRequest):
                 "id": user_id,
                 "email": user_email,
                 "name": user_name,
-                "role": user_role
+                "role": user_role,
+                "member_since": member_since
             }
         }
     except Exception as e:
@@ -802,7 +809,7 @@ async def get_current_user(user_id: str = Depends(verify_token)):
     try:
         with get_db() as conn:
             user = conn.execute(
-                "SELECT id, email, name, role FROM users WHERE id = ?",
+                "SELECT id, email, name, role, created_at, last_login FROM users WHERE id = ?",
                 (user_id,)
             ).fetchone()
             
@@ -818,7 +825,9 @@ async def get_current_user(user_id: str = Depends(verify_token)):
                     "id": user["id"],
                     "email": user["email"],
                     "name": user["name"],
-                    "role": user["role"]
+                    "role": user["role"],
+                    "member_since": user["created_at"],
+                    "last_login": user["last_login"]
                 }
             }
     except Exception as e:
@@ -828,15 +837,16 @@ async def get_current_user(user_id: str = Depends(verify_token)):
         )
 
 # ============================================
-# ANALYSIS HISTORY ENDPOINTS
+# SKIN ANALYSIS ENDPOINT (WITH HISTORY SAVE)
 # ============================================
 
-@app.post("/analyze/save")
-async def save_analysis(
-    file: UploadFile = File(...),
-    user_id: str = Depends(verify_token)
-):
-    """Save skin analysis to database"""
+@app.post("/analyze")
+async def analyze_skin(file: UploadFile = File(...), user_id: str = Depends(verify_token)):
+    """Analyze skin and save to history"""
+    
+    if not file.content_type.startswith('image/'):
+        raise HTTPException(status_code=400, detail="File must be an image")
+    
     try:
         contents = await file.read()
         
@@ -847,29 +857,48 @@ async def save_analysis(
         
         skin_type = analysis.get("skin_type", "normal")
         confidence = analysis.get("confidence", 0.75)
-        recommendations = analysis.get("recommendations", [])
+        method = analysis.get("method", "AI Analysis")
+        
+        skin_data = SKIN_CARE_DATA.get(skin_type, SKIN_CARE_DATA["normal"])
         
         # Save to database
         analysis_id = str(uuid.uuid4())
         with get_db() as conn:
             conn.execute(
-                """INSERT INTO analyses (id, user_id, skin_type, confidence, recommendations) 
-                   VALUES (?, ?, ?, ?, ?)""",
-                (analysis_id, user_id, skin_type, confidence, str(recommendations))
+                """INSERT INTO analyses 
+                   (id, user_id, skin_type, skin_name, confidence, characteristics, 
+                    recommendations, recommended_oils, method) 
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    analysis_id, user_id, skin_type, skin_data["name"], confidence,
+                    "|".join(skin_data["characteristics"]),
+                    "|".join(skin_data["recommendations"]),
+                    "|".join(skin_data["oils"]),
+                    method
+                )
             )
             conn.commit()
         
         return {
             "success": True,
-            "analysis_id": analysis_id,
             "skin_type": skin_type,
-            "confidence": confidence
+            "skin_name": skin_data["name"],
+            "confidence": round(confidence, 2),
+            "characteristics": skin_data["characteristics"],
+            "recommendations": skin_data["recommendations"],
+            "recommended_oils": skin_data["oils"],
+            "products": skin_data["products"],
+            "method": method,
+            "analysis_id": analysis_id,
+            "timestamp": datetime.now().isoformat()
         }
+        
     except Exception as e:
-        return JSONResponse(
-            status_code=500,
-            content={"success": False, "message": str(e)}
-        )
+        raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
+
+# ============================================
+# ANALYSIS HISTORY ENDPOINTS
+# ============================================
 
 @app.get("/analyses/history")
 async def get_analysis_history(user_id: str = Depends(verify_token)):
@@ -877,7 +906,12 @@ async def get_analysis_history(user_id: str = Depends(verify_token)):
     try:
         with get_db() as conn:
             analyses = conn.execute(
-                "SELECT id, skin_type, confidence, created_at FROM analyses WHERE user_id = ? ORDER BY created_at DESC",
+                """SELECT id, skin_type, skin_name, confidence, 
+                          recommendations, recommended_oils, method, created_at 
+                   FROM analyses 
+                   WHERE user_id = ? 
+                   ORDER BY created_at DESC 
+                   LIMIT 50""",
                 (user_id,)
             ).fetchall()
         
@@ -887,7 +921,11 @@ async def get_analysis_history(user_id: str = Depends(verify_token)):
                 {
                     "id": a["id"],
                     "skin_type": a["skin_type"],
+                    "skin_name": a["skin_name"],
                     "confidence": a["confidence"],
+                    "recommendations": a["recommendations"].split("|") if a["recommendations"] else [],
+                    "recommended_oils": a["recommended_oils"].split("|") if a["recommended_oils"] else [],
+                    "method": a["method"],
                     "created_at": a["created_at"]
                 }
                 for a in analyses
@@ -899,8 +937,68 @@ async def get_analysis_history(user_id: str = Depends(verify_token)):
             content={"success": False, "message": str(e)}
         )
 
+@app.get("/users/stats")
+async def get_user_stats(user_id: str = Depends(verify_token)):
+    """Get user statistics including active days and skin health score"""
+    try:
+        with get_db() as conn:
+            analyses = conn.execute(
+                "SELECT skin_type, confidence, created_at FROM analyses WHERE user_id = ?",
+                (user_id,)
+            ).fetchall()
+            
+            if not analyses:
+                return {
+                    "success": True,
+                    "total_analyses": 0,
+                    "active_days": 0,
+                    "skin_health_score": 85,
+                    "avg_confidence": 0,
+                    "skin_type_trends": {}
+                }
+            
+            # Calculate statistics
+            skin_type_counts = {}
+            active_days = set()
+            total_confidence = 0
+            
+            for a in analyses:
+                skin_type = a["skin_type"]
+                skin_type_counts[skin_type] = skin_type_counts.get(skin_type, 0) + 1
+                active_days.add(a["created_at"][:10])
+                total_confidence += a["confidence"]
+            
+            total_analyses = len(analyses)
+            avg_confidence = total_confidence / total_analyses if total_analyses > 0 else 0
+            
+            # Calculate skin health score based on latest analysis
+            latest = analyses[0]
+            skin_type_scores = {
+                "normal": 92,
+                "combination": 82,
+                "dry": 78,
+                "oily": 75,
+                "sensitive": 70
+            }
+            base_score = skin_type_scores.get(latest["skin_type"], 85)
+            skin_health_score = int(base_score * (latest["confidence"] * 0.3 + 0.7))
+            
+            return {
+                "success": True,
+                "total_analyses": total_analyses,
+                "active_days": len(active_days),
+                "skin_health_score": skin_health_score,
+                "avg_confidence": round(avg_confidence, 2),
+                "skin_type_trends": skin_type_counts
+            }
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "message": str(e)}
+        )
+
 # ============================================
-# NEW ENDPOINTS FOR ROLE MANAGEMENT
+# ROLE MANAGEMENT ENDPOINTS
 # ============================================
 
 @app.post("/user/set-role")
@@ -914,10 +1012,7 @@ async def set_user_role(
         phone = request.get('phone')
         address = request.get('address')
         
-        print(f"Setting role for user_id: {user_id}, role: {role}")  # Debug
-        
         with get_db() as conn:
-            # Check if user exists
             user = conn.execute("SELECT id FROM users WHERE id = ?", (user_id,)).fetchone()
             if not user:
                 return JSONResponse(
@@ -925,7 +1020,6 @@ async def set_user_role(
                     content={"success": False, "message": "User not found"}
                 )
             
-            # Update user
             conn.execute(
                 "UPDATE users SET role = ?, phone = ?, address = ? WHERE id = ?",
                 (role, phone, address, user_id)
@@ -968,428 +1062,7 @@ async def get_user_role(user_id: str = Depends(verify_token)):
         )
 
 # ============================================
-# STORE MANAGEMENT ENDPOINTS
-# ============================================
-
-@app.get("/stores/my")
-async def get_my_store(user_id: str = Depends(verify_token)):
-    """Get store owned by current user"""
-    try:
-        with get_db() as conn:
-            store = conn.execute(
-                "SELECT * FROM stores WHERE owner_id = ?",
-                (user_id,)
-            ).fetchone()
-            
-            if not store:
-                return JSONResponse(
-                    status_code=404,
-                    content={"success": False, "message": "Store not found", "store": None}
-                )
-            
-            return {
-                "success": True,
-                "store": dict(store)
-            }
-    except Exception as e:
-        return JSONResponse(
-            status_code=500,
-            content={"success": False, "message": str(e)}
-        )
-
-@app.get("/stores/nearby")
-async def get_nearby_stores(
-    lat: float,
-    lon: float,
-    radius: float = 10,
-    user_id: str = Depends(verify_token)
-):
-    """Get stores near a location"""
-    try:
-        from math import radians, sin, cos, sqrt, atan2
-        
-        def haversine(lat1, lon1, lat2, lon2):
-            R = 6371
-            lat1, lon1, lat2, lon2 = map(radians, [lat1, lon1, lat2, lon2])
-            dlat = lat2 - lat1
-            dlon = lon2 - lon1
-            a = sin(dlat/2)**2 + cos(lat1) * cos(lat2) * sin(dlon/2)**2
-            c = 2 * atan2(sqrt(a), sqrt(1-a))
-            return R * c
-        
-        with get_db() as conn:
-            stores = conn.execute("SELECT * FROM stores WHERE is_active = 1").fetchall()
-        
-        nearby = []
-        for store in stores:
-            distance = haversine(lat, lon, store["latitude"], store["longitude"])
-            if distance <= radius:
-                nearby.append({
-                    "id": store["id"],
-                    "name": store["name"],
-                    "address": store["address"],
-                    "distance_km": round(distance, 2),
-                    "phone": store["phone"],
-                    "rating": store["rating"]
-                })
-        
-        nearby.sort(key=lambda x: x["distance_km"])
-        
-        return {
-            "success": True,
-            "stores": nearby,
-            "user_location": {"lat": lat, "lon": lon}
-        }
-    except Exception as e:
-        return JSONResponse(
-            status_code=500,
-            content={"success": False, "message": str(e)}
-        )
-
-@app.get("/stores/stats")
-async def get_store_stats(user_id: str = Depends(verify_token)):
-    """Get store statistics"""
-    try:
-        with get_db() as conn:
-            # Get store id
-            store = conn.execute("SELECT id FROM stores WHERE owner_id = ?", (user_id,)).fetchone()
-            
-            if not store:
-                return {
-                    "success": True,
-                    "total_products": 0,
-                    "total_orders": 0,
-                    "total_revenue": 0,
-                    "pending_orders": 0
-                }
-            
-            store_id = store["id"]
-            
-            # Count products
-            products = conn.execute("SELECT COUNT(*) as count FROM products WHERE store_id = ?", (store_id,)).fetchone()
-            
-            # Count orders
-            orders = conn.execute("SELECT COUNT(*) as count FROM orders WHERE store_id = ?", (store_id,)).fetchone()
-            
-            # Calculate revenue
-            revenue = conn.execute("SELECT SUM(total_amount) as total FROM orders WHERE store_id = ? AND status = 'delivered'", (store_id,)).fetchone()
-            
-            # Count pending orders
-            pending = conn.execute("SELECT COUNT(*) as count FROM orders WHERE store_id = ? AND status = 'pending'", (store_id,)).fetchone()
-            
-            return {
-                "success": True,
-                "total_products": products["count"] if products else 0,
-                "total_orders": orders["count"] if orders else 0,
-                "total_revenue": revenue["total"] if revenue and revenue["total"] else 0,
-                "pending_orders": pending["count"] if pending else 0
-            }
-    except Exception as e:
-        return JSONResponse(
-            status_code=500,
-            content={"success": False, "message": str(e)}
-        )
-
-@app.post("/stores/create")
-async def create_store(
-    request: dict,
-    user_id: str = Depends(verify_token)
-):
-    """Create a new store"""
-    try:
-        name = request.get('name')
-        description = request.get('description')
-        address = request.get('address')
-        latitude = request.get('latitude')
-        longitude = request.get('longitude')
-        phone = request.get('phone')
-        
-        # Check if user already has a store
-        with get_db() as conn:
-            existing = conn.execute("SELECT id FROM stores WHERE owner_id = ?", (user_id,)).fetchone()
-            if existing:
-                return JSONResponse(
-                    status_code=400,
-                    content={"success": False, "message": "You already have a store"}
-                )
-            
-            store_id = str(uuid.uuid4())
-            conn.execute(
-                """INSERT INTO stores (id, owner_id, name, description, address, latitude, longitude, phone) 
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                (store_id, user_id, name, description, address, latitude, longitude, phone)
-            )
-            conn.commit()
-        
-        return {
-            "success": True,
-            "message": "Store created successfully",
-            "store_id": store_id
-        }
-    except Exception as e:
-        return JSONResponse(
-            status_code=500,
-            content={"success": False, "message": str(e)}
-        )
-
-# ============================================
-# PRODUCT MANAGEMENT ENDPOINTS
-# ============================================
-
-@app.post("/products/add")
-async def add_product(
-    request: dict,
-    user_id: str = Depends(verify_token)
-):
-    """Add product to store"""
-    try:
-        name = request.get('name')
-        description = request.get('description')
-        price = request.get('price')
-        category = request.get('category')
-        skin_type = request.get('skin_type')
-        stock = request.get('stock', 0)
-        
-        with get_db() as conn:
-            # Get user's store
-            store = conn.execute("SELECT id FROM stores WHERE owner_id = ?", (user_id,)).fetchone()
-            if not store:
-                return JSONResponse(
-                    status_code=404,
-                    content={"success": False, "message": "Store not found"}
-                )
-            
-            product_id = str(uuid.uuid4())
-            conn.execute(
-                """INSERT INTO products (id, store_id, name, description, price, category, skin_type, stock) 
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                (product_id, store["id"], name, description, price, category, skin_type, stock)
-            )
-            conn.commit()
-        
-        return {
-            "success": True,
-            "message": "Product added successfully",
-            "product_id": product_id
-        }
-    except Exception as e:
-        return JSONResponse(
-            status_code=500,
-            content={"success": False, "message": str(e)}
-        )
-
-@app.get("/products/my")
-async def get_my_products(user_id: str = Depends(verify_token)):
-    """Get products from user's store"""
-    try:
-        with get_db() as conn:
-            store = conn.execute("SELECT id FROM stores WHERE owner_id = ?", (user_id,)).fetchone()
-            if not store:
-                return {
-                    "success": True,
-                    "products": []
-                }
-            
-            products = conn.execute(
-                "SELECT * FROM products WHERE store_id = ? ORDER BY created_at DESC",
-                (store["id"],)
-            ).fetchall()
-        
-        return {
-            "success": True,
-            "products": [dict(p) for p in products]
-        }
-    except Exception as e:
-        return JSONResponse(
-            status_code=500,
-            content={"success": False, "message": str(e)}
-        )
-
-@app.get("/products/store")
-async def get_store_products(user_id: str = Depends(verify_token)):
-    """Alias for get_my_products"""
-    return await get_my_products(user_id)
-
-@app.get("/products/recommend")
-async def get_recommended_products(
-    lat: float,
-    lon: float,
-    skin_type: str = "normal",
-    user_id: str = Depends(verify_token)
-):
-    """Get products recommended based on skin type and location"""
-    try:
-        from math import radians, sin, cos, sqrt, atan2
-        
-        def haversine(lat1, lon1, lat2, lon2):
-            R = 6371
-            lat1, lon1, lat2, lon2 = map(radians, [lat1, lon1, lat2, lon2])
-            dlat = lat2 - lat1
-            dlon = lon2 - lon1
-            a = sin(dlat/2)**2 + cos(lat1) * cos(lat2) * sin(dlon/2)**2
-            c = 2 * atan2(sqrt(a), sqrt(1-a))
-            return R * c
-        
-        with get_db() as conn:
-            stores = conn.execute("SELECT id, name, latitude, longitude FROM stores WHERE is_active = 1").fetchall()
-        
-        nearby_store_ids = []
-        for store in stores:
-            distance = haversine(lat, lon, store["latitude"], store["longitude"])
-            if distance <= 10:
-                nearby_store_ids.append(store["id"])
-        
-        if not nearby_store_ids:
-            return {"success": True, "products": []}
-        
-        placeholders = ','.join('?' * len(nearby_store_ids))
-        with get_db() as conn:
-            products = conn.execute(
-                f"""SELECT p.*, s.name as store_name, s.address 
-                   FROM products p 
-                   JOIN stores s ON p.store_id = s.id 
-                   WHERE p.store_id IN ({placeholders}) 
-                   AND p.skin_type = ? 
-                   AND p.is_active = 1
-                   AND p.stock > 0""",
-                nearby_store_ids + [skin_type]
-            ).fetchall()
-        
-        return {
-            "success": True,
-            "products": [dict(p) for p in products]
-        }
-    except Exception as e:
-        return JSONResponse(
-            status_code=500,
-            content={"success": False, "message": str(e)}
-        )
-
-# ============================================
-# ORDER MANAGEMENT ENDPOINTS
-# ============================================
-
-@app.get("/orders/my-orders")
-async def get_my_orders(user_id: str = Depends(verify_token)):
-    """Get user's orders"""
-    try:
-        with get_db() as conn:
-            orders = conn.execute(
-                """SELECT o.*, s.name as store_name 
-                   FROM orders o 
-                   JOIN stores s ON o.store_id = s.id 
-                   WHERE o.user_id = ? 
-                   ORDER BY o.created_at DESC""",
-                (user_id,)
-            ).fetchall()
-        
-        return {
-            "success": True,
-            "orders": [dict(o) for o in orders]
-        }
-    except Exception as e:
-        return JSONResponse(
-            status_code=500,
-            content={"success": False, "message": str(e)}
-        )
-
-@app.get("/orders/store-orders")
-async def get_store_orders(user_id: str = Depends(verify_token)):
-    """Get orders for user's store"""
-    try:
-        with get_db() as conn:
-            store = conn.execute("SELECT id FROM stores WHERE owner_id = ?", (user_id,)).fetchone()
-            if not store:
-                return {"success": True, "orders": []}
-            
-            orders = conn.execute(
-                """SELECT o.*, u.name as customer_name, u.email as customer_email
-                   FROM orders o 
-                   JOIN users u ON o.user_id = u.id 
-                   WHERE o.store_id = ? 
-                   ORDER BY o.created_at DESC""",
-                (store["id"],)
-            ).fetchall()
-        
-        return {
-            "success": True,
-            "orders": [dict(o) for o in orders]
-        }
-    except Exception as e:
-        return JSONResponse(
-            status_code=500,
-            content={"success": False, "message": str(e)}
-        )
-
-@app.put("/orders/{order_id}/status")
-async def update_order_status(
-    order_id: str,
-    request: dict,
-    user_id: str = Depends(verify_token)
-):
-    """Update order status"""
-    try:
-        status = request.get('status')
-        
-        with get_db() as conn:
-            # Check if user owns the store
-            order = conn.execute("SELECT store_id FROM orders WHERE id = ?", (order_id,)).fetchone()
-            if not order:
-                return JSONResponse(
-                    status_code=404,
-                    content={"success": False, "message": "Order not found"}
-                )
-            
-            store = conn.execute("SELECT owner_id FROM stores WHERE id = ?", (order["store_id"],)).fetchone()
-            if store["owner_id"] != user_id:
-                return JSONResponse(
-                    status_code=403,
-                    content={"success": False, "message": "Not authorized"}
-                )
-            
-            conn.execute(
-                "UPDATE orders SET status = ? WHERE id = ?",
-                (status, order_id)
-            )
-            conn.commit()
-        
-        return {
-            "success": True,
-            "message": f"Order status updated to {status}"
-        }
-    except Exception as e:
-        return JSONResponse(
-            status_code=500,
-            content={"success": False, "message": str(e)}
-        )
-
-# ============================================
-# USER STATS ENDPOINTS
-# ============================================
-
-@app.get("/users/stats")
-async def get_user_stats(user_id: str = Depends(verify_token)):
-    """Get user statistics"""
-    try:
-        with get_db() as conn:
-            # Count analyses
-            analyses = conn.execute("SELECT COUNT(*) as count FROM analyses WHERE user_id = ?", (user_id,)).fetchone()
-            
-            # Count orders
-            orders = conn.execute("SELECT COUNT(*) as count FROM orders WHERE user_id = ?", (user_id,)).fetchone()
-        
-        return {
-            "success": True,
-            "total_analyses": analyses["count"] if analyses else 0,
-            "total_orders": orders["count"] if orders else 0
-        }
-    except Exception as e:
-        return JSONResponse(
-            status_code=500,
-            content={"success": False, "message": str(e)}
-        )
-# ============================================
-# OPENAI CHAT ENDPOINT (Working Version)
+# OPENAI CHAT ENDPOINT
 # ============================================
 
 import openai
@@ -1417,30 +1090,22 @@ async def chat(request: dict, user_id: str = Depends(verify_token)):
         }
     
     try:
-        # System prompt - tells AI how to behave
         system_prompt = """You are 'SkinSight AI', a professional African skincare advisor.
         
 RULES:
 - Give short, practical advice (under 150 words)
 - Be friendly and warm
 - Always encourage sunscreen use (SPF 30+)
-- Recommend affordable products available in Tanzania/East Africa
-- Use simple English (bonge la Kiswahili si vibaya)
 - Never give medical diagnoses
-- Refer to dermatologists for serious issues
 
 TOPICS YOU CAN HELP WITH:
 - Skin types (dry, oily, combination, sensitive, normal)
 - Sun protection (UV index in Tanzania is extreme)
 - Daily skincare routines
-- Natural remedies (aloe vera, shea butter, coconut oil)
-- Product recommendations
-
-If user asks non-skincare question, politely redirect to skincare."""
+- Natural remedies (aloe vera, shea butter, coconut oil)"""
         
-        # Call OpenAI API
         response = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo",  # Tumia gpt-3.5-turbo kwanza (cheaper)
+            model="gpt-3.5-turbo",
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_message}
@@ -1463,33 +1128,43 @@ If user asks non-skincare question, politely redirect to skincare."""
             "success": False,
             "response": "Samahani, nahitaji muda kidogo. Tafadhali jaribu tena."
         }
+
 # ============================================
-# PROFILE & HISTORY ENDPOINTS
+# PRODUCT RECOMMENDATION ENDPOINT
 # ============================================
 
-@app.get("/analyses/history")
-async def get_analysis_history(user_id: str = Depends(verify_token)):
-    """Get user's analysis history from database"""
+@app.get("/products/recommend")
+async def get_recommended_products(
+    lat: float,
+    lon: float,
+    skin_type: str = "normal",
+    user_id: str = Depends(verify_token)
+):
+    """Get products recommended based on skin type"""
     try:
-        with get_db() as conn:
-            analyses = conn.execute(
-                """SELECT id, skin_type, confidence, recommendations, recommended_oils, created_at 
-                   FROM analyses WHERE user_id = ? ORDER BY created_at DESC""",
-                (user_id,)
-            ).fetchall()
-        
         return {
             "success": True,
-            "analyses": [
+            "products": [
                 {
-                    "id": a["id"],
-                    "skin_type": a["skin_type"],
-                    "confidence": a["confidence"],
-                    "recommendations": a["recommendations"].split("|") if a["recommendations"] else [],
-                    "recommended_oils": a["recommended_oils"].split("|") if a["recommended_oils"] else [],
-                    "created_at": a["created_at"]
+                    "id": "1",
+                    "name": "Hydrating Face Cream",
+                    "description": "Deeply moisturizes dry skin",
+                    "price": 25000,
+                    "category": "moisturizer",
+                    "skin_type": skin_type,
+                    "store_name": "SkinCare Tanzania",
+                    "rating": 4.5
+                },
+                {
+                    "id": "2",
+                    "name": "Gentle Foaming Cleanser",
+                    "description": "For oily and combination skin",
+                    "price": 18000,
+                    "category": "cleanser",
+                    "skin_type": skin_type,
+                    "store_name": "Glow Beauty",
+                    "rating": 4.3
                 }
-                for a in analyses
             ]
         }
     except Exception as e:
@@ -1498,60 +1173,6 @@ async def get_analysis_history(user_id: str = Depends(verify_token)):
             content={"success": False, "message": str(e)}
         )
 
-@app.get("/users/stats")
-async def get_user_stats(user_id: str = Depends(verify_token)):
-    """Get user statistics from database"""
-    try:
-        with get_db() as conn:
-            # Get all analyses
-            analyses = conn.execute(
-                "SELECT skin_type, confidence, created_at FROM analyses WHERE user_id = ?",
-                (user_id,)
-            ).fetchall()
-            
-            if not analyses:
-                return {
-                    "success": True,
-                    "total_analyses": 0,
-                    "active_days": 0,
-                    "skin_health_score": 85,
-                    "skin_type_trends": {}
-                }
-            
-            # Calculate skin type trends
-            skin_type_counts = {}
-            for a in analyses:
-                skin_type = a["skin_type"]
-                skin_type_counts[skin_type] = skin_type_counts.get(skin_type, 0) + 1
-            
-            # Calculate active days (unique dates)
-            active_days = len(set([a["created_at"][:10] for a in analyses]))
-            
-            # Calculate skin health score based on latest analysis
-            latest = analyses[0]
-            skin_type_scores = {
-                "normal": 92,
-                "combination": 82,
-                "dry": 78,
-                "oily": 75,
-                "sensitive": 70
-            }
-            skin_health_score = skin_type_scores.get(latest["skin_type"], 85)
-            # Adjust by confidence
-            skin_health_score = int(skin_health_score * (latest["confidence"] * 0.3 + 0.7))
-            
-            return {
-                "success": True,
-                "total_analyses": len(analyses),
-                "active_days": active_days,
-                "skin_health_score": skin_health_score,
-                "skin_type_trends": skin_type_counts
-            }
-    except Exception as e:
-        return JSONResponse(
-            status_code=500,
-            content={"success": False, "message": str(e)}
-        )
 # ============================================
 # RUN SERVER
 # ============================================
@@ -1564,6 +1185,7 @@ if __name__ == "__main__":
     print(f"✅ MediaPipe: {'Available' if MEDIAPIPE_AVAILABLE else 'Not available'}")
     print(f"✅ Weather API: {'Configured' if WEATHER_API_KEY else 'Not configured'}")
     print(f"✅ Skin types: {len(SKIN_CARE_DATA)}")
+    print(f"✅ Database: SQLite with users, analyses tables")
     print("=" * 60)
     print(f"🚀 Server starting on port {port}...")
     print(f"📚 API Docs: https://skinglow-backend.up.railway.app/docs")
