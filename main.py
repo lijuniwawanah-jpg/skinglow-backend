@@ -12,7 +12,7 @@ import uvicorn
 from PIL import Image
 import io
 import os
-from typing import Dict, Optional
+from typing import Dict, Optional, List
 import requests
 from dotenv import load_dotenv
 import jwt
@@ -37,14 +37,11 @@ def get_db():
     return conn
 
 def hash_password(password: str) -> str:
-    """Hash password using SHA256"""
     return hashlib.sha256(password.encode()).hexdigest()
 
 def init_db():
     with get_db() as conn:
-        # ============================================
-        # USERS TABLE - WITH TIMESTAMPS AND APPROVAL
-        # ============================================
+        # USERS TABLE
         conn.execute('''
             CREATE TABLE IF NOT EXISTS users (
                 id TEXT PRIMARY KEY,
@@ -62,7 +59,7 @@ def init_db():
             )
         ''')
         
-        # Add missing columns if table already exists
+        # Add missing columns
         cursor = conn.execute("PRAGMA table_info(users)")
         columns = [col[1] for col in cursor.fetchall()]
         
@@ -77,9 +74,7 @@ def init_db():
         if 'last_login' not in columns:
             conn.execute("ALTER TABLE users ADD COLUMN last_login TIMESTAMP")
         
-        # ============================================
-        # ANALYSES TABLE - FOR HISTORY
-        # ============================================
+        # ANALYSES TABLE
         conn.execute('''
             CREATE TABLE IF NOT EXISTS analyses (
                 id TEXT PRIMARY KEY,
@@ -97,9 +92,7 @@ def init_db():
             )
         ''')
         
-        # ============================================
         # STORES TABLE
-        # ============================================
         conn.execute('''
             CREATE TABLE IF NOT EXISTS stores (
                 id TEXT PRIMARY KEY,
@@ -118,9 +111,7 @@ def init_db():
             )
         ''')
         
-        # ============================================
         # PRODUCTS TABLE
-        # ============================================
         conn.execute('''
             CREATE TABLE IF NOT EXISTS products (
                 id TEXT PRIMARY KEY,
@@ -142,9 +133,7 @@ def init_db():
             )
         ''')
         
-        # ============================================
         # SPONSORED PRODUCTS TABLE
-        # ============================================
         conn.execute('''
             CREATE TABLE IF NOT EXISTS sponsored_products (
                 id TEXT PRIMARY KEY,
@@ -161,9 +150,7 @@ def init_db():
             )
         ''')
         
-        # ============================================
         # VENDOR_SUBSCRIPTIONS TABLE
-        # ============================================
         conn.execute('''
             CREATE TABLE IF NOT EXISTS vendor_subscriptions (
                 id TEXT PRIMARY KEY,
@@ -177,9 +164,7 @@ def init_db():
             )
         ''')
         
-        # ============================================
         # ORDERS TABLE
-        # ============================================
         conn.execute('''
             CREATE TABLE IF NOT EXISTS orders (
                 id TEXT PRIMARY KEY,
@@ -196,9 +181,7 @@ def init_db():
             )
         ''')
         
-        # ============================================
         # ORDER ITEMS TABLE
-        # ============================================
         conn.execute('''
             CREATE TABLE IF NOT EXISTS order_items (
                 id TEXT PRIMARY KEY,
@@ -211,15 +194,15 @@ def init_db():
             )
         ''')
         
-        # Create indexes for faster queries
+        # Create indexes
         conn.execute('CREATE INDEX IF NOT EXISTS idx_analyses_user_id ON analyses(user_id)')
         conn.execute('CREATE INDEX IF NOT EXISTS idx_analyses_created_at ON analyses(created_at DESC)')
         conn.execute('CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)')
         conn.execute('CREATE INDEX IF NOT EXISTS idx_products_store_id ON products(store_id)')
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_users_role ON users(role)')
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_users_is_approved ON users(is_approved)')
         
-        # ============================================
         # CREATE DEFAULT ADMIN USER
-        # ============================================
         admin_email = "admin@skinglow.com"
         admin_password = "Admin@123"
         
@@ -249,22 +232,8 @@ init_db()
 # ============================================
 # INITIALIZE FASTAPI
 # ============================================
-app = FastAPI(
-    title="SkinGlow AI API",
-    description="Professional Skin Analysis with Weather & UV Protection",
-    version="3.0.0",
-    docs_url="/docs",
-    redoc_url="/redoc"
-)
-
-# CORS Configuration
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+app = FastAPI(title="SkinGlow AI API", version="3.0.0")
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 # ============================================
 # SECURITY CONFIGURATION
@@ -278,185 +247,132 @@ security = HTTPBearer()
 
 def create_access_token(data: dict, expires_delta: timedelta = None):
     to_encode = data.copy()
-    if expires_delta:
-        expire = datetime.utcnow() + expires_delta
-    else:
-        expire = datetime.utcnow() + timedelta(minutes=15)
+    expire = datetime.utcnow() + (expires_delta or timedelta(minutes=15))
     to_encode.update({"exp": expire})
-    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
-    return encoded_jwt
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
 def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
     token = credentials.credentials
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         user_id = payload.get("user_id") or payload.get("sub")
-        if user_id is None:
-            raise HTTPException(status_code=401, detail="Invalid token: no user identifier")
+        if not user_id:
+            raise HTTPException(status_code=401, detail="Invalid token")
         return user_id
-    except jwt.ExpiredSignatureError:
-        raise HTTPException(status_code=401, detail="Token expired")
-    except jwt.InvalidTokenError:
+    except:
         raise HTTPException(status_code=401, detail="Invalid token")
 
 # ============================================
 # REQUEST MODELS
 # ============================================
-
 class RegisterRequest(BaseModel):
     email: str
     password: str
     name: Optional[str] = None
     phone: Optional[str] = None
     address: Optional[str] = None
+    role: Optional[str] = "customer"
 
 class LoginRequest(BaseModel):
     email: str
     password: str
 
 # ============================================
-# TRY TO LOAD MEDIAPIPE (Optional)
+# MEDIAPIPE (Optional)
 # ============================================
 MEDIAPIPE_AVAILABLE = False
-
 try:
     import mediapipe as mp
     import cv2
     import numpy as np
-    
     os.environ['GLOG_minloglevel'] = '2'
-    
     mp_face_detection = mp.solutions.face_detection
-    face_detection = mp_face_detection.FaceDetection(
-        model_selection=1,
-        min_detection_confidence=0.5
-    )
+    face_detection = mp_face_detection.FaceDetection(model_selection=1, min_detection_confidence=0.5)
     MEDIAPIPE_AVAILABLE = True
-    print("✅ MediaPipe loaded successfully!")
-except ImportError:
-    print("⚠️ MediaPipe not available. Using fallback mode.")
-except Exception as e:
-    print(f"⚠️ MediaPipe error: {e}")
+    print("✅ MediaPipe loaded!")
+except:
+    print("⚠️ MediaPipe not available")
 
 # ============================================
-# WEATHER API CONFIGURATION (One Call 3.0)
+# WEATHER API
 # ============================================
 WEATHER_API_KEY = os.getenv('OPENWEATHER_API_KEY', '')
 WEATHER_API_URL = "https://api.openweathermap.org/data/2.5"
 
-# ============================================
-# REVERSE GEOCODING (Get City Name)
-# ============================================
-
 async def get_city_from_coordinates(lat: float, lon: float) -> str:
-    """Get city name from coordinates using OpenStreetMap Nominatim"""
     try:
-        geocode_url = f"https://nominatim.openstreetmap.org/reverse?lat={lat}&lon={lon}&format=json"
-        response = requests.get(geocode_url, headers={'User-Agent': 'SkinGlowApp/1.0'}, timeout=10)
+        response = requests.get(f"https://nominatim.openstreetmap.org/reverse?lat={lat}&lon={lon}&format=json", 
+                                headers={'User-Agent': 'SkinGlowApp/1.0'}, timeout=5)
         if response.status_code == 200:
             data = response.json()
-            city = data.get('address', {}).get('city') or data.get('address', {}).get('town') or 'Unknown'
-            return city
-        return 'Unknown'
-    except Exception:
-        return 'Unknown'
-
-# ============================================
-# WEATHER DATA (One Call API 3.0)
-# ============================================
+            return data.get('address', {}).get('city') or data.get('address', {}).get('town') or 'Unknown'
+    except:
+        pass
+    return 'Unknown'
 
 def get_weather_data(lat: float, lon: float) -> Dict:
-    """Get weather and UV data from OpenWeatherMap One Call API 3.0"""
     if not WEATHER_API_KEY:
-        return {"success": False, "error": "Weather API key not configured", "uv_index": 5, "temperature": 25, "city": "Unknown"}
-    
+        return {"success": False, "uv_index": 5, "temperature": 25, "city": "Unknown"}
     try:
-        onecall_url = "https://api.openweathermap.org/data/3.0/onecall"
-        params = {'lat': lat, 'lon': lon, 'appid': WEATHER_API_KEY, 'units': 'metric'}
-        response = requests.get(onecall_url, params=params, timeout=10)
-        data = response.json()
-        
+        response = requests.get(f"https://api.openweathermap.org/data/3.0/onecall?lat={lat}&lon={lon}&appid={WEATHER_API_KEY}&units=metric", timeout=10)
         if response.status_code != 200:
-            print(f"One Call API Error: {data.get('message', 'Unknown error')}")
             return get_weather_data_fallback(lat, lon)
-        
-        current = data.get('current', {})
-        uv_index = current.get('uvi', 5)
-        temperature = current.get('temp', 25)
-        humidity = current.get('humidity', 60)
-        weather_condition = current.get('weather', [{}])[0].get('description', 'clear')
-        
+        current = response.json().get('current', {})
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         city_name = loop.run_until_complete(get_city_from_coordinates(lat, lon))
-        
-        return {"success": True, "temperature": temperature, "humidity": humidity, "condition": weather_condition, "uv_index": uv_index, "city": city_name}
-    except Exception as e:
-        print(f"One Call API error: {e}")
+        return {"success": True, "temperature": current.get('temp', 25), "humidity": current.get('humidity', 60), 
+                "condition": current.get('weather', [{}])[0].get('description', 'clear'), "uv_index": current.get('uvi', 5), "city": city_name}
+    except:
         return get_weather_data_fallback(lat, lon)
 
 def get_weather_data_fallback(lat: float, lon: float) -> Dict:
-    """Fallback to old Current Weather API"""
     try:
-        weather_url = f"{WEATHER_API_URL}/weather"
-        weather_params = {'lat': lat, 'lon': lon, 'appid': WEATHER_API_KEY, 'units': 'metric'}
-        weather_response = requests.get(weather_url, params=weather_params, timeout=10)
-        weather_data = weather_response.json()
+        response = requests.get(f"{WEATHER_API_URL}/weather?lat={lat}&lon={lon}&appid={WEATHER_API_KEY}&units=metric", timeout=10)
+        data = response.json()
         current_hour = datetime.now().hour
         uv_index = 5 if 6 <= current_hour <= 18 else 0
-        return {
-            "success": True,
-            "temperature": weather_data.get('main', {}).get('temp', 25),
-            "humidity": weather_data.get('main', {}).get('humidity', 60),
-            "condition": weather_data.get('weather', [{}])[0].get('description', 'clear'),
-            "uv_index": uv_index,
-            "city": weather_data.get('name', 'Unknown')
-        }
-    except Exception as e:
-        return {"success": False, "error": str(e), "uv_index": 5, "temperature": 25, "city": "Unknown"}
+        return {"success": True, "temperature": data.get('main', {}).get('temp', 25), "humidity": data.get('main', {}).get('humidity', 60),
+                "condition": data.get('weather', [{}])[0].get('description', 'clear'), "uv_index": uv_index, "city": data.get('name', 'Unknown')}
+    except:
+        return {"success": False, "uv_index": 5, "temperature": 25, "city": "Unknown"}
 
 def get_sunscreen_recommendation(uv_index: float, skin_type: str) -> Dict:
-    """Get sunscreen recommendation based on UV index and skin type"""
     if uv_index <= 2:
-        uv_level, base_spf, advice = "Low", 15, "Minimal UV risk. Daily protection still recommended."
+        uv_level, base_spf, advice = "Low", 15, "Minimal UV risk."
     elif uv_index <= 5:
-        uv_level, base_spf, advice = "Moderate", 30, "Moderate UV. Sunscreen required for outdoor activities."
+        uv_level, base_spf, advice = "Moderate", 30, "Sunscreen required."
     elif uv_index <= 7:
-        uv_level, base_spf, advice = "High", 50, "High UV. Strong protection needed."
+        uv_level, base_spf, advice = "High", 50, "Strong protection needed."
     elif uv_index <= 10:
-        uv_level, base_spf, advice = "Very High", 50, "Very high UV. Maximum protection required."
+        uv_level, base_spf, advice = "Very High", 50, "Maximum protection required."
     else:
-        uv_level, base_spf, advice = "Extreme", 50, "EXTREME UV! Avoid sun exposure if possible."
-    
-    skin_advice = {
-        'dry': "Use hydrating sunscreen with moisturizing ingredients",
-        'oily': "Use oil-free, non-comedogenic sunscreen",
-        'combination': "Use lightweight, balancing sunscreen",
-        'sensitive': "Use mineral sunscreen with zinc oxide",
-        'normal': "Use broad-spectrum sunscreen"
-    }
-    
-    return {
-        "uv_index": uv_index, "uv_level": uv_level, "advice": advice,
-        "recommended_spf": base_spf, "reapplication_hours": 2 if uv_index > 5 else 4,
-        "skin_advice": skin_advice.get(skin_type, skin_advice['normal']),
-        "tips": ["Apply sunscreen 15-20 minutes before sun exposure", f"Reapply every {2 if uv_index > 5 else 4} hours", "Use 1/2 teaspoon for face and neck", "Don't forget ears, lips, and back of hands"]
-    }
+        uv_level, base_spf, advice = "Extreme", 50, "Avoid sun exposure."
+    skin_advice = {'dry': "Hydrating sunscreen", 'oily': "Oil-free sunscreen", 'combination': "Lightweight sunscreen", 'sensitive': "Mineral sunscreen", 'normal': "Broad-spectrum sunscreen"}
+    return {"uv_index": uv_index, "uv_level": uv_level, "advice": advice, "recommended_spf": base_spf, 
+            "reapplication_hours": 2 if uv_index > 5 else 4, "skin_advice": skin_advice.get(skin_type, skin_advice['normal']),
+            "tips": ["Apply 15-20 min before sun exposure", f"Reapply every {2 if uv_index > 5 else 4} hours", "Use 1/2 tsp for face and neck"]}
 
 # ============================================
 # SKIN CARE DATABASE
 # ============================================
-SKIN_CARE_DATA: Dict = {
-    "dry": {"name": "Dry Skin", "characteristics": ["Lacks moisture", "May feel tight or flaky", "Fine lines may be visible"], "recommendations": ["🌊 Use hydrating cleanser with ceramides", "💧 Apply hyaluronic acid serum twice daily", "🧴 Use rich moisturizer with shea butter", "🌙 Add facial oil (argan or rosehip) to night routine", "💨 Use humidifier in dry environments"], "oils": ["Argan Oil", "Rosehip Oil", "Jojoba Oil", "Avocado Oil"], "products": [{"name": "CeraVe Hydrating Cleanser", "price": "$12.99", "rating": 4.7}, {"name": "The Ordinary Hyaluronic Acid 2%", "price": "$7.90", "rating": 4.5}]},
-    "oily": {"name": "Oily Skin", "characteristics": ["Excess sebum production", "Shiny appearance", "Enlarged pores"], "recommendations": ["🧼 Use gentle foaming cleanser with salicylic acid", "✨ Apply niacinamide serum to control sebum", "💧 Use lightweight gel moisturizer", "🔬 Exfoliate 2-3 times weekly with BHA", "🌿 Use clay mask once weekly"], "oils": ["Grapeseed Oil", "Tea Tree Oil", "Hemp Seed Oil", "Rosehip Oil"], "products": [{"name": "La Roche-Posay Effaclar Gel", "price": "$14.99", "rating": 4.6}, {"name": "The Ordinary Niacinamide 10%", "price": "$5.90", "rating": 4.8}]},
-    "combination": {"name": "Combination Skin", "characteristics": ["Oily in T-zone", "Normal or dry on cheeks"], "recommendations": ["⚖️ Use balancing cleanser with tea tree oil", "💧 Apply lightweight moisturizer everywhere", "🧴 Use richer cream on dry areas only", "🔬 Exfoliate T-zone twice weekly"], "oils": ["Jojoba Oil", "Squalane Oil", "Marula Oil", "Neroli Oil"], "products": [{"name": "COSRX Low pH Cleanser", "price": "$14.00", "rating": 4.7}, {"name": "Purito Centella Serum", "price": "$18.00", "rating": 4.6}]},
-    "sensitive": {"name": "Sensitive Skin", "characteristics": ["Easily irritated", "Prone to redness"], "recommendations": ["🌸 Use fragrance-free, gentle cleanser", "🌿 Apply calming ingredients like centella asiatica", "💧 Use minimal ingredient moisturizer", "⚠️ Avoid active ingredients (retinols, acids)"], "oils": ["Chamomile Oil", "Calendula Oil", "Evening Primrose Oil", "Rose Oil"], "products": [{"name": "Avene Tolerance Cleanser", "price": "$22.00", "rating": 4.8}, {"name": "La Roche-Posay Cicaplast Baume", "price": "$15.99", "rating": 4.9}]},
-    "normal": {"name": "Normal Skin", "characteristics": ["Balanced moisture", "Neither too oily nor too dry"], "recommendations": ["✨ Maintain consistent cleansing routine", "🍊 Use antioxidant serum (Vitamin C)", "☀️ Apply moisturizer with SPF daily", "🔬 Exfoliate weekly for maintenance"], "oils": ["Argan Oil", "Jojoba Oil", "Rosehip Oil", "Marula Oil"], "products": [{"name": "Krave Beauty Matcha Cleanser", "price": "$16.00", "rating": 4.7}, {"name": "Timeless Vitamin C Serum", "price": "$21.95", "rating": 4.8}]}
+SKIN_CARE_DATA = {
+    "dry": {"name": "Dry Skin", "characteristics": ["Lacks moisture", "May feel tight or flaky"], 
+            "recommendations": ["Use hydrating cleanser", "Apply hyaluronic acid", "Use rich moisturizer", "Add facial oil"],
+            "oils": ["Argan Oil", "Rosehip Oil", "Jojoba Oil"]},
+    "oily": {"name": "Oily Skin", "characteristics": ["Excess sebum", "Shiny appearance"], 
+             "recommendations": ["Use foaming cleanser", "Apply niacinamide", "Use gel moisturizer", "Exfoliate weekly"],
+             "oils": ["Grapeseed Oil", "Tea Tree Oil", "Hemp Seed Oil"]},
+    "combination": {"name": "Combination Skin", "characteristics": ["Oily in T-zone", "Normal or dry on cheeks"],
+                    "recommendations": ["Use balancing cleanser", "Lightweight moisturizer", "Exfoliate T-zone"],
+                    "oils": ["Jojoba Oil", "Squalane Oil", "Marula Oil"]},
+    "sensitive": {"name": "Sensitive Skin", "characteristics": ["Easily irritated", "Prone to redness"],
+                  "recommendations": ["Use gentle cleanser", "Calming ingredients", "Minimal products"],
+                  "oils": ["Chamomile Oil", "Calendula Oil", "Rose Oil"]},
+    "normal": {"name": "Normal Skin", "characteristics": ["Balanced moisture", "Neither too oily nor too dry"],
+               "recommendations": ["Regular cleansing", "Antioxidant serum", "SPF daily", "Weekly exfoliation"],
+               "oils": ["Argan Oil", "Jojoba Oil", "Rosehip Oil"]}
 }
-
-# ============================================
-# HELPER FUNCTIONS
-# ============================================
 
 def analyze_with_mediapipe(image_bytes: bytes) -> Optional[Dict]:
     if not MEDIAPIPE_AVAILABLE:
@@ -469,29 +385,21 @@ def analyze_with_mediapipe(image_bytes: bytes) -> Optional[Dict]:
         results = face_detection.process(image_rgb)
         if results.detections:
             h, w, _ = image.shape
-            detection = results.detections[0]
-            bbox = detection.location_data.relative_bounding_box
-            x = int(bbox.xmin * w)
-            y = int(bbox.ymin * h)
-            width = int(bbox.width * w)
-            height = int(bbox.height * h)
+            bbox = results.detections[0].location_data.relative_bounding_box
+            x, y = int(bbox.xmin * w), int(bbox.ymin * h)
+            width, height = int(bbox.width * w), int(bbox.height * h)
             face_region = image_rgb[y:y+height, x:x+width]
             if face_region.size > 0:
                 gray_face = cv2.cvtColor(face_region, cv2.COLOR_RGB2GRAY)
-                avg_brightness = np.mean(gray_face)
                 texture_var = np.var(gray_face)
                 if texture_var > 3000:
-                    skin_type = "oily"
+                    return {"skin_type": "oily", "confidence": 0.85, "method": "MediaPipe AI"}
                 elif texture_var < 1500:
-                    skin_type = "dry"
-                elif avg_brightness > 180:
-                    skin_type = "sensitive"
+                    return {"skin_type": "dry", "confidence": 0.85, "method": "MediaPipe AI"}
                 else:
-                    skin_type = "normal"
-                return {"skin_type": skin_type, "confidence": 0.85, "method": "MediaPipe AI"}
+                    return {"skin_type": "normal", "confidence": 0.85, "method": "MediaPipe AI"}
         return None
-    except Exception as e:
-        print(f"MediaPipe analysis error: {e}")
+    except:
         return None
 
 def analyze_with_fallback(image_bytes: bytes) -> Dict:
@@ -500,28 +408,15 @@ def analyze_with_fallback(image_bytes: bytes) -> Dict:
         if image.mode != 'RGB':
             image = image.convert('RGB')
         pixels = list(image.getdata())
-        sample_size = min(1000, len(pixels))
-        step = len(pixels) // sample_size if sample_size > 0 else 1
-        sample = [pixels[i] for i in range(0, len(pixels), step)][:sample_size]
-        if sample:
-            avg_r = sum(p[0] for p in sample) / len(sample)
-            avg_g = sum(p[1] for p in sample) / len(sample)
-            avg_b = sum(p[2] for p in sample) / len(sample)
-            brightness = (avg_r + avg_g + avg_b) / 3
-        else:
-            brightness = 128
+        sample = pixels[:min(1000, len(pixels))]
+        brightness = sum(sum(p[:3])/3 for p in sample) / len(sample) if sample else 128
         if brightness > 200:
-            skin_type = "dry"
+            return {"skin_type": "dry", "confidence": 0.70, "method": "Color Analysis"}
         elif brightness < 80:
-            skin_type = "oily"
-        elif brightness > 150:
-            skin_type = "sensitive"
-        elif 100 < brightness < 150:
-            skin_type = "combination"
+            return {"skin_type": "oily", "confidence": 0.70, "method": "Color Analysis"}
         else:
-            skin_type = "normal"
-        return {"skin_type": skin_type, "confidence": 0.70, "method": "Color Analysis"}
-    except Exception as e:
+            return {"skin_type": "normal", "confidence": 0.70, "method": "Color Analysis"}
+    except:
         return {"skin_type": "normal", "confidence": 0.50, "method": "Default"}
 
 # ============================================
@@ -530,52 +425,37 @@ def analyze_with_fallback(image_bytes: bytes) -> Dict:
 
 @app.get("/")
 async def root():
-    return {"status": "healthy", "app": "SkinGlow AI", "version": "3.0.0", "mediapipe_available": MEDIAPIPE_AVAILABLE, "weather_api_configured": bool(WEATHER_API_KEY), "timestamp": datetime.now().isoformat()}
+    return {"status": "healthy", "app": "SkinGlow AI", "version": "3.0.0"}
 
 @app.get("/health")
 async def health_check():
-    return {"status": "operational", "mediapipe": MEDIAPIPE_AVAILABLE, "weather_api": bool(WEATHER_API_KEY), "skin_types": list(SKIN_CARE_DATA.keys()), "timestamp": datetime.now().isoformat()}
-
-@app.get("/skin-types")
-async def get_skin_types():
-    return {"skin_types": [{"id": skin_id, "name": data["name"]} for skin_id, data in SKIN_CARE_DATA.items()]}
+    return {"status": "operational", "mediapipe": MEDIAPIPE_AVAILABLE, "weather_api": bool(WEATHER_API_KEY), "skin_types": list(SKIN_CARE_DATA.keys())}
 
 @app.get("/location/{lat}/{lon}")
 async def get_location_name(lat: float, lon: float):
-    city_name = "Unknown"
-    try:
-        geocode_url = f"https://nominatim.openstreetmap.org/reverse?lat={lat}&lon={lon}&format=json"
-        response = requests.get(geocode_url, headers={'User-Agent': 'SkinGlowApp/1.0'}, timeout=5)
-        if response.status_code == 200:
-            data = response.json()
-            city_name = data.get('address', {}).get('city') or data.get('address', {}).get('town') or 'Unknown'
-    except:
-        pass
-    return {"success": True, "city": city_name, "latitude": lat, "longitude": lon, "timestamp": datetime.now().isoformat()}
+    return {"success": True, "city": await get_city_from_coordinates(lat, lon), "latitude": lat, "longitude": lon}
 
 @app.get("/sunscreen/{uv_index}")
 async def get_sunscreen(uv_index: float, skin_type: str = "normal"):
-    result = get_sunscreen_recommendation(uv_index, skin_type)
-    return {"success": True, **result, "timestamp": datetime.now().isoformat()}
+    return {"success": True, **get_sunscreen_recommendation(uv_index, skin_type)}
 
 @app.get("/weather/{lat}/{lon}")
 async def get_weather(lat: float, lon: float, skin_type: str = "normal", user_id: str = Depends(verify_token)):
     weather = get_weather_data(lat, lon)
     if not weather.get("success"):
-        return {"success": False, "error": weather.get("error", "Weather service unavailable"), "timestamp": datetime.now().isoformat()}
-    uv_index = weather.get("uv_index", 5)
-    sunscreen = get_sunscreen_recommendation(uv_index, skin_type)
-    return {"success": True, "weather": {"temperature": weather.get("temperature"), "humidity": weather.get("humidity"), "condition": weather.get("condition"), "uv_index": uv_index, "city": weather.get("city")}, "sunscreen": sunscreen, "timestamp": datetime.now().isoformat()}
+        return {"success": False, "error": weather.get("error", "Weather service unavailable")}
+    sunscreen = get_sunscreen_recommendation(weather.get("uv_index", 5), skin_type)
+    return {"success": True, "weather": weather, "sunscreen": sunscreen}
 
 # ============================================
-# AUTH ENDPOINTS
+# AUTH ENDPOINTS (WITH ROLE SUPPORT)
 # ============================================
 
 @app.post("/auth/register")
 async def register(request: RegisterRequest):
     try:
         email, password, name = request.email, request.password, request.name
-        phone, address = request.phone, request.address
+        phone, address, role = request.phone, request.address, request.role
         
         with get_db() as conn:
             existing = conn.execute("SELECT id FROM users WHERE email = ?", (email,)).fetchone()
@@ -584,13 +464,19 @@ async def register(request: RegisterRequest):
             
             user_id = str(uuid.uuid4())
             password_hash = hash_password(password)
-            conn.execute("INSERT INTO users (id, email, password_hash, name, phone, address, is_approved, created_at) VALUES (?, ?, ?, ?, ?, ?, 0, CURRENT_TIMESTAMP)", (user_id, email, password_hash, name, phone, address))
+            # Set is_approved: 1 for customer, 0 for vendor (needs admin approval)
+            is_approved = 1 if role == 'customer' else 0
+            
+            conn.execute("""INSERT INTO users (id, email, password_hash, name, role, is_approved, phone, address, created_at) 
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)""",
+                        (user_id, email, password_hash, name, role, is_approved, phone, address))
             conn.commit()
         
-        token_data = {"sub": email, "user_id": user_id, "exp": datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)}
+        token_data = {"sub": email, "user_id": user_id, "role": role, "exp": datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)}
         token = jwt.encode(token_data, SECRET_KEY, algorithm=ALGORITHM)
         
-        return {"success": True, "message": "User registered successfully. Awaiting admin approval.", "token": token, "token_type": "bearer", "user": {"id": user_id, "email": email, "name": name, "role": "customer", "is_approved": 0, "member_since": datetime.now().isoformat()}}
+        return {"success": True, "message": "User registered successfully", "token": token, "token_type": "bearer",
+                "user": {"id": user_id, "email": email, "name": name, "role": role, "is_approved": is_approved}}
     except Exception as e:
         return JSONResponse(status_code=500, content={"success": False, "message": str(e)})
 
@@ -604,7 +490,7 @@ async def login(request: LoginRequest):
                 return JSONResponse(status_code=401, content={"success": False, "message": "Invalid email or password"})
             
             if user["role"] == "vendor" and user["is_approved"] == 0:
-                return JSONResponse(status_code=403, content={"success": False, "message": "Your account is pending admin approval"})
+                return JSONResponse(status_code=403, content={"success": False, "message": "Your vendor account is pending admin approval"})
             
             user_id, user_email, user_name, user_role, is_approved, member_since, phone, address = user["id"], user["email"], user["name"], user["role"], user["is_approved"], user["created_at"], user["phone"], user["address"]
             conn.execute("UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE id = ?", (user_id,))
@@ -613,23 +499,21 @@ async def login(request: LoginRequest):
         token_data = {"sub": user_email, "user_id": user_id, "role": user_role, "exp": datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)}
         token = jwt.encode(token_data, SECRET_KEY, algorithm=ALGORITHM)
         
-        return {"success": True, "message": "Login successful", "token": token, "token_type": "bearer", "user": {"id": user_id, "email": user_email, "name": user_name, "role": user_role, "is_approved": is_approved, "member_since": member_since, "phone": phone, "address": address}}
+        return {"success": True, "message": "Login successful", "token": token, "token_type": "bearer",
+                "user": {"id": user_id, "email": user_email, "name": user_name, "role": user_role, "is_approved": is_approved, "phone": phone, "address": address, "member_since": member_since}}
     except Exception as e:
         return JSONResponse(status_code=500, content={"success": False, "message": str(e)})
 
 @app.get("/users/me")
 async def get_current_user(user_id: str = Depends(verify_token)):
-    try:
-        with get_db() as conn:
-            user = conn.execute("SELECT id, email, name, role, is_approved, created_at, last_login, phone, address FROM users WHERE id = ?", (user_id,)).fetchone()
-            if not user:
-                return JSONResponse(status_code=404, content={"success": False, "message": "User not found"})
-            return {"success": True, "user": {"id": user["id"], "email": user["email"], "name": user["name"], "role": user["role"], "is_approved": user["is_approved"], "member_since": user["created_at"], "last_login": user["last_login"], "phone": user["phone"], "address": user["address"]}}
-    except Exception as e:
-        return JSONResponse(status_code=500, content={"success": False, "message": str(e)})
+    with get_db() as conn:
+        user = conn.execute("SELECT id, email, name, role, is_approved, created_at, last_login, phone, address FROM users WHERE id = ?", (user_id,)).fetchone()
+        if not user:
+            return JSONResponse(status_code=404, content={"success": False, "message": "User not found"})
+        return {"success": True, "user": dict(user)}
 
 # ============================================
-# SKIN ANALYSIS ENDPOINT
+# SKIN ANALYSIS
 # ============================================
 
 @app.post("/analyze")
@@ -638,74 +522,44 @@ async def analyze_skin(file: UploadFile = File(...), user_id: str = Depends(veri
         raise HTTPException(status_code=400, detail="File must be an image")
     try:
         contents = await file.read()
-        analysis = analyze_with_mediapipe(contents)
-        if not analysis:
-            analysis = analyze_with_fallback(contents)
-        skin_type, confidence, method = analysis.get("skin_type", "normal"), analysis.get("confidence", 0.75), analysis.get("method", "AI Analysis")
+        analysis = analyze_with_mediapipe(contents) or analyze_with_fallback(contents)
+        skin_type, confidence, method = analysis["skin_type"], analysis["confidence"], analysis["method"]
         skin_data = SKIN_CARE_DATA.get(skin_type, SKIN_CARE_DATA["normal"])
         analysis_id = str(uuid.uuid4())
         with get_db() as conn:
-            conn.execute("INSERT INTO analyses (id, user_id, skin_type, skin_name, confidence, characteristics, recommendations, recommended_oils, method) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", (analysis_id, user_id, skin_type, skin_data["name"], confidence, "|".join(skin_data["characteristics"]), "|".join(skin_data["recommendations"]), "|".join(skin_data["oils"]), method))
+            conn.execute("""INSERT INTO analyses (id, user_id, skin_type, skin_name, confidence, characteristics, recommendations, recommended_oils, method) 
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (analysis_id, user_id, skin_type, skin_data["name"], confidence, 
+                         "|".join(skin_data["characteristics"]), "|".join(skin_data["recommendations"]), "|".join(skin_data["oils"]), method))
             conn.commit()
-        return {"success": True, "skin_type": skin_type, "skin_name": skin_data["name"], "confidence": round(confidence, 2), "characteristics": skin_data["characteristics"], "recommendations": skin_data["recommendations"], "recommended_oils": skin_data["oils"], "products": skin_data["products"], "method": method, "analysis_id": analysis_id, "timestamp": datetime.now().isoformat()}
+        return {"success": True, "skin_type": skin_type, "skin_name": skin_data["name"], "confidence": confidence,
+                "characteristics": skin_data["characteristics"], "recommendations": skin_data["recommendations"],
+                "recommended_oils": skin_data["oils"], "analysis_id": analysis_id}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
 
-# ============================================
-# ANALYSIS HISTORY ENDPOINTS
-# ============================================
-
 @app.get("/analyses/history")
 async def get_analysis_history(user_id: str = Depends(verify_token)):
-    try:
-        with get_db() as conn:
-            analyses = conn.execute("SELECT id, skin_type, skin_name, confidence, recommendations, recommended_oils, method, created_at FROM analyses WHERE user_id = ? ORDER BY created_at DESC LIMIT 50", (user_id,)).fetchall()
-            return {"success": True, "analyses": [{"id": a["id"], "skin_type": a["skin_type"], "skin_name": a["skin_name"], "confidence": a["confidence"], "recommendations": a["recommendations"].split("|") if a["recommendations"] else [], "recommended_oils": a["recommended_oils"].split("|") if a["recommended_oils"] else [], "method": a["method"], "created_at": a["created_at"]} for a in analyses]}
-    except Exception as e:
-        return JSONResponse(status_code=500, content={"success": False, "message": str(e)})
+    with get_db() as conn:
+        analyses = conn.execute("SELECT id, skin_type, skin_name, confidence, recommendations, recommended_oils, method, created_at FROM analyses WHERE user_id = ? ORDER BY created_at DESC LIMIT 50", (user_id,)).fetchall()
+        return {"success": True, "analyses": [dict(a) for a in analyses]}
 
 @app.get("/users/stats")
 async def get_user_stats(user_id: str = Depends(verify_token)):
-    try:
-        with get_db() as conn:
-            analyses = conn.execute("SELECT skin_type, confidence, created_at FROM analyses WHERE user_id = ?", (user_id,)).fetchall()
-            if not analyses:
-                return {"success": True, "total_analyses": 0, "active_days": 0, "skin_health_score": 85, "avg_confidence": 0, "skin_type_trends": {}}
-            skin_type_counts, active_days, total_confidence = {}, set(), 0
-            for a in analyses:
-                skin_type_counts[a["skin_type"]] = skin_type_counts.get(a["skin_type"], 0) + 1
-                active_days.add(a["created_at"][:10])
-                total_confidence += a["confidence"]
-            total_analyses, avg_confidence = len(analyses), total_confidence / len(analyses)
-            latest = analyses[0]
-            skin_type_scores = {"normal": 92, "combination": 82, "dry": 78, "oily": 75, "sensitive": 70}
-            base_score = skin_type_scores.get(latest["skin_type"], 85)
-            skin_health_score = int(base_score * (latest["confidence"] * 0.3 + 0.7))
-            return {"success": True, "total_analyses": total_analyses, "active_days": len(active_days), "skin_health_score": skin_health_score, "avg_confidence": round(avg_confidence, 2), "skin_type_trends": skin_type_counts}
-    except Exception as e:
-        return JSONResponse(status_code=500, content={"success": False, "message": str(e)})
-
-# ============================================
-# OPENAI CHAT ENDPOINT
-# ============================================
-
-import openai
-
-@app.post("/chat")
-async def chat(request: dict, user_id: str = Depends(verify_token)):
-    user_message = request.get('message', '')
-    if not user_message:
-        return {"success": False, "response": "Tafadhali uliza swali kuhusu ngozi yako."}
-    openai.api_key = os.getenv('OPENAI_API_KEY', '')
-    if not openai.api_key:
-        return {"success": False, "response": "AI chat is not configured yet. Please try again later."}
-    try:
-        system_prompt = "You are 'SkinSight AI', a professional African skincare advisor. Give short, practical advice (under 150 words). Be friendly and warm. Always encourage sunscreen use (SPF 30+). Never give medical diagnoses."
-        response = openai.ChatCompletion.create(model="gpt-3.5-turbo", messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_message}], max_tokens=300, temperature=0.7)
-        return {"success": True, "response": response.choices[0].message.content, "model": "gpt-3.5-turbo"}
-    except Exception as e:
-        print(f"OpenAI error: {str(e)}")
-        return {"success": False, "response": "Samahani, nahitaji muda kidogo. Tafadhali jaribu tena."}
+    with get_db() as conn:
+        analyses = conn.execute("SELECT skin_type, confidence, created_at FROM analyses WHERE user_id = ?", (user_id,)).fetchall()
+        if not analyses:
+            return {"success": True, "total_analyses": 0, "active_days": 0, "skin_health_score": 85, "skin_type_trends": {}}
+        skin_type_counts, active_days = {}, set()
+        for a in analyses:
+            skin_type_counts[a["skin_type"]] = skin_type_counts.get(a["skin_type"], 0) + 1
+            active_days.add(a["created_at"][:10])
+        latest = analyses[0]
+        scores = {"normal": 92, "combination": 82, "dry": 78, "oily": 75, "sensitive": 70}
+        base_score = scores.get(latest["skin_type"], 85)
+        skin_health_score = int(base_score * (latest["confidence"] * 0.3 + 0.7))
+        return {"success": True, "total_analyses": len(analyses), "active_days": len(active_days), 
+                "skin_health_score": skin_health_score, "skin_type_trends": skin_type_counts}
 
 # ============================================
 # VENDOR ENDPOINTS
@@ -728,7 +582,7 @@ async def vendor_add_product(request: dict, user_id: str = Depends(verify_token)
 @app.get("/vendor/products")
 async def vendor_get_products(user_id: str = Depends(verify_token)):
     with get_db() as conn:
-        products = conn.execute("SELECT id, name, description, price, category, skin_type, stock, is_approved, is_sponsored, views, created_at FROM products WHERE store_id = ? ORDER BY created_at DESC", (user_id,)).fetchall()
+        products = conn.execute("SELECT * FROM products WHERE store_id = ? ORDER BY created_at DESC", (user_id,)).fetchall()
         return {"success": True, "products": [dict(p) for p in products]}
 
 @app.post("/vendor/sponsor")
@@ -736,10 +590,8 @@ async def sponsor_product(request: dict, user_id: str = Depends(verify_token)):
     product_id, amount, days = request.get('product_id'), request.get('amount', 0), request.get('days', 7)
     with get_db() as conn:
         product = conn.execute("SELECT id, is_approved FROM products WHERE id = ? AND store_id = ?", (product_id, user_id)).fetchone()
-        if not product:
-            return JSONResponse(status_code=404, content={"success": False, "message": "Product not found"})
-        if product["is_approved"] == 0:
-            return JSONResponse(status_code=400, content={"success": False, "message": "Product must be approved first"})
+        if not product or product["is_approved"] == 0:
+            return JSONResponse(status_code=400, content={"success": False, "message": "Product not found or not approved"})
         sponsored_id, end_date = str(uuid.uuid4()), datetime.now() + timedelta(days=days)
         conn.execute("INSERT INTO sponsored_products (id, product_id, vendor_id, amount_paid, end_date) VALUES (?, ?, ?, ?, ?)", (sponsored_id, product_id, user_id, amount, end_date))
         conn.execute("UPDATE products SET is_sponsored = 1 WHERE id = ?", (product_id,))
@@ -750,12 +602,16 @@ async def sponsor_product(request: dict, user_id: str = Depends(verify_token)):
 async def vendor_stats(user_id: str = Depends(verify_token)):
     with get_db() as conn:
         products = conn.execute("SELECT COUNT(*) as total FROM products WHERE store_id = ?", (user_id,)).fetchone()
-        sales = conn.execute("SELECT SUM(oi.quantity * oi.price) as revenue, COUNT(DISTINCT o.id) as orders FROM orders o JOIN order_items oi ON o.id = oi.order_id JOIN products p ON oi.product_id = p.id WHERE p.store_id = ? AND o.status = 'delivered'", (user_id,)).fetchone()
+        sales = conn.execute("""SELECT SUM(oi.quantity * oi.price) as revenue, COUNT(DISTINCT o.id) as orders 
+                               FROM orders o JOIN order_items oi ON o.id = oi.order_id 
+                               JOIN products p ON oi.product_id = p.id 
+                               WHERE p.store_id = ? AND o.status = 'delivered'""", (user_id,)).fetchone()
         views = conn.execute("SELECT SUM(views) as total_views FROM products WHERE store_id = ?", (user_id,)).fetchone()
-        return {"success": True, "total_products": products["total"] if products else 0, "total_revenue": sales["revenue"] if sales and sales["revenue"] else 0, "total_orders": sales["orders"] if sales else 0, "total_views": views["total_views"] if views else 0}
+        return {"success": True, "total_products": products["total"] or 0, "total_revenue": sales["revenue"] or 0, 
+                "total_orders": sales["orders"] or 0, "total_views": views["total_views"] or 0}
 
 # ============================================
-# SUPER ADMIN ENDPOINTS
+# SUPER ADMIN ENDPOINTS (FULL FEATURED)
 # ============================================
 
 @app.get("/admin/stats")
@@ -765,25 +621,153 @@ async def admin_stats(user_id: str = Depends(verify_token)):
         if not user or user["role"] != "admin":
             return JSONResponse(status_code=403, content={"success": False, "message": "Admin access required"})
         
-        total_users = conn.execute("SELECT COUNT(*) as count FROM users").fetchone()
-        total_vendors = conn.execute("SELECT COUNT(*) as count FROM users WHERE role = 'vendor'").fetchone()
-        pending_vendors = conn.execute("SELECT COUNT(*) as count FROM users WHERE role = 'vendor' AND is_approved = 0").fetchone()
-        total_products = conn.execute("SELECT COUNT(*) as count FROM products").fetchone()
-        pending_products = conn.execute("SELECT COUNT(*) as count FROM products WHERE is_approved = 0").fetchone()
-        total_orders = conn.execute("SELECT COUNT(*) as count FROM orders").fetchone()
-        total_revenue = conn.execute("SELECT SUM(total_amount) as total FROM orders WHERE status = 'delivered'").fetchone()
+        # User statistics
+        total_users = conn.execute("SELECT COUNT(*) as count FROM users").fetchone()["count"]
+        total_customers = conn.execute("SELECT COUNT(*) as count FROM users WHERE role = 'customer'").fetchone()["count"]
+        total_vendors = conn.execute("SELECT COUNT(*) as count FROM users WHERE role = 'vendor'").fetchone()["count"]
+        pending_vendors = conn.execute("SELECT COUNT(*) as count FROM users WHERE role = 'vendor' AND is_approved = 0").fetchone()["count"]
         
-        recent_users = conn.execute("SELECT id, email, name, role, is_approved, created_at FROM users ORDER BY created_at DESC LIMIT 10").fetchall()
-        pending_products_list = conn.execute("SELECT p.*, u.name as vendor_name FROM products p JOIN users u ON p.store_id = u.id WHERE p.is_approved = 0 ORDER BY p.created_at DESC").fetchall()
+        # Product statistics
+        total_products = conn.execute("SELECT COUNT(*) as count FROM products").fetchone()["count"]
+        pending_products = conn.execute("SELECT COUNT(*) as count FROM products WHERE is_approved = 0").fetchone()["count"]
+        sponsored_products = conn.execute("SELECT COUNT(*) as count FROM products WHERE is_sponsored = 1 AND is_approved = 1").fetchone()["count"]
+        
+        # Order statistics
+        total_orders = conn.execute("SELECT COUNT(*) as count FROM orders").fetchone()["count"]
+        pending_orders = conn.execute("SELECT COUNT(*) as count FROM orders WHERE status = 'pending'").fetchone()["count"]
+        completed_orders = conn.execute("SELECT COUNT(*) as count FROM orders WHERE status = 'delivered'").fetchone()["count"]
+        total_revenue = conn.execute("SELECT SUM(total_amount) as total FROM orders WHERE status = 'delivered'").fetchone()["total"] or 0
+        
+        # Get all users with details
+        all_users = conn.execute("SELECT id, email, name, role, is_approved, phone, address, created_at, last_login FROM users ORDER BY created_at DESC").fetchall()
+        
+        # Get all vendors with details
+        all_vendors = conn.execute("SELECT id, email, name, role, is_approved, phone, address, created_at FROM users WHERE role = 'vendor' ORDER BY created_at DESC").fetchall()
+        
+        # Get pending vendors
         pending_vendors_list = conn.execute("SELECT id, email, name, phone, address, created_at FROM users WHERE role = 'vendor' AND is_approved = 0 ORDER BY created_at DESC").fetchall()
         
-        return {"success": True, "stats": {"total_users": total_users["count"] if total_users else 0, "total_vendors": total_vendors["count"] if total_vendors else 0, "pending_vendors": pending_vendors["count"] if pending_vendors else 0, "total_products": total_products["count"] if total_products else 0, "pending_products": pending_products["count"] if pending_products else 0, "total_orders": total_orders["count"] if total_orders else 0, "total_revenue": total_revenue["total"] if total_revenue and total_revenue["total"] else 0}, "recent_users": [dict(u) for u in recent_users], "pending_products": [dict(p) for p in pending_products_list], "pending_vendors": [dict(v) for v in pending_vendors_list]}
+        # Get pending products with vendor names
+        pending_products_list = conn.execute("""SELECT p.*, u.name as vendor_name, u.email as vendor_email 
+                                               FROM products p JOIN users u ON p.store_id = u.id 
+                                               WHERE p.is_approved = 0 ORDER BY p.created_at DESC""").fetchall()
+        
+        # Get recent analyses
+        recent_analyses = conn.execute("""SELECT a.*, u.name as user_name, u.email as user_email 
+                                         FROM analyses a JOIN users u ON a.user_id = u.id 
+                                         ORDER BY a.created_at DESC LIMIT 20""").fetchall()
+        
+        return {
+            "success": True,
+            "stats": {
+                "users": {"total": total_users, "customers": total_customers, "vendors": total_vendors, "pending_vendors": pending_vendors},
+                "products": {"total": total_products, "pending": pending_products, "sponsored": sponsored_products},
+                "orders": {"total": total_orders, "pending": pending_orders, "completed": completed_orders, "revenue": total_revenue}
+            },
+            "all_users": [dict(u) for u in all_users],
+            "all_vendors": [dict(v) for v in all_vendors],
+            "pending_vendors": [dict(v) for v in pending_vendors_list],
+            "pending_products": [dict(p) for p in pending_products_list],
+            "recent_analyses": [dict(a) for a in recent_analyses]
+        }
+
+@app.get("/admin/users")
+async def admin_get_users(user_id: str = Depends(verify_token)):
+    with get_db() as conn:
+        user = conn.execute("SELECT role FROM users WHERE id = ?", (user_id,)).fetchone()
+        if not user or user["role"] != "admin":
+            return JSONResponse(status_code=403, content={"success": False, "message": "Admin access required"})
+        
+        users = conn.execute("SELECT id, email, name, role, is_approved, phone, address, created_at, last_login FROM users ORDER BY created_at DESC").fetchall()
+        return {"success": True, "users": [dict(u) for u in users]}
+
+@app.get("/admin/user/{target_user_id}")
+async def admin_get_user(target_user_id: str, user_id: str = Depends(verify_token)):
+    with get_db() as conn:
+        admin = conn.execute("SELECT role FROM users WHERE id = ?", (user_id,)).fetchone()
+        if not admin or admin["role"] != "admin":
+            return JSONResponse(status_code=403, content={"success": False, "message": "Admin access required"})
+        
+        # Get user details
+        user = conn.execute("SELECT id, email, name, role, is_approved, phone, address, created_at, last_login FROM users WHERE id = ?", (target_user_id,)).fetchone()
+        if not user:
+            return JSONResponse(status_code=404, content={"success": False, "message": "User not found"})
+        
+        # Get user's analyses
+        analyses = conn.execute("SELECT id, skin_type, skin_name, confidence, created_at FROM analyses WHERE user_id = ? ORDER BY created_at DESC", (target_user_id,)).fetchall()
+        
+        # Get user's orders
+        orders = conn.execute("SELECT id, status, total_amount, created_at FROM orders WHERE user_id = ? ORDER BY created_at DESC", (target_user_id,)).fetchall()
+        
+        return {
+            "success": True,
+            "user": dict(user),
+            "analyses": [dict(a) for a in analyses],
+            "orders": [dict(o) for o in orders]
+        }
+
+@app.get("/admin/vendors")
+async def admin_get_vendors(user_id: str = Depends(verify_token)):
+    with get_db() as conn:
+        user = conn.execute("SELECT role FROM users WHERE id = ?", (user_id,)).fetchone()
+        if not user or user["role"] != "admin":
+            return JSONResponse(status_code=403, content={"success": False, "message": "Admin access required"})
+        
+        vendors = conn.execute("SELECT id, email, name, is_approved, phone, address, created_at FROM users WHERE role = 'vendor' ORDER BY created_at DESC").fetchall()
+        
+        # Get product count for each vendor
+        result = []
+        for vendor in vendors:
+            product_count = conn.execute("SELECT COUNT(*) as count FROM products WHERE store_id = ?", (vendor["id"],)).fetchone()["count"]
+            vendor_dict = dict(vendor)
+            vendor_dict["product_count"] = product_count
+            result.append(vendor_dict)
+        
+        return {"success": True, "vendors": result}
+
+@app.get("/admin/vendor/{vendor_id}")
+async def admin_get_vendor(vendor_id: str, user_id: str = Depends(verify_token)):
+    with get_db() as conn:
+        admin = conn.execute("SELECT role FROM users WHERE id = ?", (user_id,)).fetchone()
+        if not admin or admin["role"] != "admin":
+            return JSONResponse(status_code=403, content={"success": False, "message": "Admin access required"})
+        
+        vendor = conn.execute("SELECT id, email, name, is_approved, phone, address, created_at FROM users WHERE id = ? AND role = 'vendor'", (vendor_id,)).fetchone()
+        if not vendor:
+            return JSONResponse(status_code=404, content={"success": False, "message": "Vendor not found"})
+        
+        products = conn.execute("SELECT id, name, price, category, skin_type, stock, is_approved, is_sponsored, views, created_at FROM products WHERE store_id = ? ORDER BY created_at DESC", (vendor_id,)).fetchall()
+        orders = conn.execute("""SELECT o.id, o.status, o.total_amount, o.created_at, COUNT(oi.id) as items 
+                                FROM orders o JOIN order_items oi ON o.id = oi.order_id 
+                                WHERE o.store_id = ? GROUP BY o.id ORDER BY o.created_at DESC""", (vendor_id,)).fetchall()
+        
+        return {"success": True, "vendor": dict(vendor), "products": [dict(p) for p in products], "orders": [dict(o) for o in orders]}
+
+@app.post("/admin/approve-vendor/{vendor_id}")
+async def approve_vendor(vendor_id: str, user_id: str = Depends(verify_token)):
+    with get_db() as conn:
+        admin = conn.execute("SELECT role FROM users WHERE id = ?", (user_id,)).fetchone()
+        if not admin or admin["role"] != "admin":
+            return JSONResponse(status_code=403, content={"success": False, "message": "Admin access required"})
+        conn.execute("UPDATE users SET is_approved = 1 WHERE id = ? AND role = 'vendor'", (vendor_id,))
+        conn.commit()
+    return {"success": True, "message": "Vendor approved successfully"}
+
+@app.post("/admin/reject-vendor/{vendor_id}")
+async def reject_vendor(vendor_id: str, user_id: str = Depends(verify_token)):
+    with get_db() as conn:
+        admin = conn.execute("SELECT role FROM users WHERE id = ?", (user_id,)).fetchone()
+        if not admin or admin["role"] != "admin":
+            return JSONResponse(status_code=403, content={"success": False, "message": "Admin access required"})
+        conn.execute("DELETE FROM users WHERE id = ? AND role = 'vendor'", (vendor_id,))
+        conn.commit()
+    return {"success": True, "message": "Vendor application rejected"}
 
 @app.post("/admin/approve-product/{product_id}")
 async def approve_product(product_id: str, user_id: str = Depends(verify_token)):
     with get_db() as conn:
-        user = conn.execute("SELECT role FROM users WHERE id = ?", (user_id,)).fetchone()
-        if not user or user["role"] != "admin":
+        admin = conn.execute("SELECT role FROM users WHERE id = ?", (user_id,)).fetchone()
+        if not admin or admin["role"] != "admin":
             return JSONResponse(status_code=403, content={"success": False, "message": "Admin access required"})
         conn.execute("UPDATE products SET is_approved = 1 WHERE id = ?", (product_id,))
         conn.commit()
@@ -792,38 +776,18 @@ async def approve_product(product_id: str, user_id: str = Depends(verify_token))
 @app.post("/admin/reject-product/{product_id}")
 async def reject_product(product_id: str, user_id: str = Depends(verify_token)):
     with get_db() as conn:
-        user = conn.execute("SELECT role FROM users WHERE id = ?", (user_id,)).fetchone()
-        if not user or user["role"] != "admin":
+        admin = conn.execute("SELECT role FROM users WHERE id = ?", (user_id,)).fetchone()
+        if not admin or admin["role"] != "admin":
             return JSONResponse(status_code=403, content={"success": False, "message": "Admin access required"})
         conn.execute("DELETE FROM products WHERE id = ?", (product_id,))
         conn.commit()
     return {"success": True, "message": "Product rejected and deleted"}
 
-@app.post("/admin/approve-vendor/{vendor_id}")
-async def approve_vendor(vendor_id: str, user_id: str = Depends(verify_token)):
-    with get_db() as conn:
-        user = conn.execute("SELECT role FROM users WHERE id = ?", (user_id,)).fetchone()
-        if not user or user["role"] != "admin":
-            return JSONResponse(status_code=403, content={"success": False, "message": "Admin access required"})
-        conn.execute("UPDATE users SET is_approved = 1 WHERE id = ?", (vendor_id,))
-        conn.commit()
-    return {"success": True, "message": "Vendor approved successfully"}
-
-@app.post("/admin/reject-vendor/{vendor_id}")
-async def reject_vendor(vendor_id: str, user_id: str = Depends(verify_token)):
-    with get_db() as conn:
-        user = conn.execute("SELECT role FROM users WHERE id = ?", (user_id,)).fetchone()
-        if not user or user["role"] != "admin":
-            return JSONResponse(status_code=403, content={"success": False, "message": "Admin access required"})
-        conn.execute("DELETE FROM users WHERE id = ?", (vendor_id,))
-        conn.commit()
-    return {"success": True, "message": "Vendor application rejected"}
-
 @app.post("/admin/delete-user/{target_user_id}")
 async def admin_delete_user(target_user_id: str, user_id: str = Depends(verify_token)):
     with get_db() as conn:
-        user = conn.execute("SELECT role FROM users WHERE id = ?", (user_id,)).fetchone()
-        if not user or user["role"] != "admin":
+        admin = conn.execute("SELECT role FROM users WHERE id = ?", (user_id,)).fetchone()
+        if not admin or admin["role"] != "admin":
             return JSONResponse(status_code=403, content={"success": False, "message": "Admin access required"})
         conn.execute("DELETE FROM users WHERE id = ?", (target_user_id,))
         conn.commit()
@@ -832,12 +796,12 @@ async def admin_delete_user(target_user_id: str, user_id: str = Depends(verify_t
 @app.post("/admin/set-vendor-role/{target_user_id}")
 async def set_vendor_role(target_user_id: str, user_id: str = Depends(verify_token)):
     with get_db() as conn:
-        user = conn.execute("SELECT role FROM users WHERE id = ?", (user_id,)).fetchone()
-        if not user or user["role"] != "admin":
+        admin = conn.execute("SELECT role FROM users WHERE id = ?", (user_id,)).fetchone()
+        if not admin or admin["role"] != "admin":
             return JSONResponse(status_code=403, content={"success": False, "message": "Admin access required"})
-        conn.execute("UPDATE users SET role = 'vendor' WHERE id = ?", (target_user_id,))
+        conn.execute("UPDATE users SET role = 'vendor', is_approved = 0 WHERE id = ?", (target_user_id,))
         conn.commit()
-    return {"success": True, "message": "User role updated to vendor"}
+    return {"success": True, "message": "User role updated to vendor (pending approval)"}
 
 # ============================================
 # CUSTOMER PRODUCTS ENDPOINT
@@ -845,40 +809,56 @@ async def set_vendor_role(target_user_id: str, user_id: str = Depends(verify_tok
 
 @app.get("/products/customer")
 async def get_customer_products(skin_type: str = None, category: str = None, sort_by: str = "sponsored", user_id: str = Depends(verify_token)):
-    try:
-        with get_db() as conn:
-            query = "SELECT p.*, u.name as vendor_name FROM products p JOIN users u ON p.store_id = u.id WHERE p.is_approved = 1"
-            params = []
-            if skin_type and skin_type != "all":
-                query += " AND p.skin_type = ?"
-                params.append(skin_type)
-            if category and category != "all":
-                query += " AND p.category = ?"
-                params.append(category)
-            if sort_by == "sponsored":
-                query += " ORDER BY p.is_sponsored DESC, p.views DESC, p.created_at DESC"
-            elif sort_by == "popular":
-                query += " ORDER BY p.views DESC, p.created_at DESC"
-            elif sort_by == "newest":
-                query += " ORDER BY p.created_at DESC"
-            elif sort_by == "price_low":
-                query += " ORDER BY p.price ASC"
-            elif sort_by == "price_high":
-                query += " ORDER BY p.price DESC"
-            else:
-                query += " ORDER BY p.is_sponsored DESC, p.created_at DESC"
-            
-            products = conn.execute(query, params).fetchall()
-            for product in products:
-                conn.execute("UPDATE products SET views = views + 1 WHERE id = ?", (product["id"],))
-            conn.commit()
+    with get_db() as conn:
+        query = "SELECT p.*, u.name as vendor_name FROM products p JOIN users u ON p.store_id = u.id WHERE p.is_approved = 1"
+        params = []
+        if skin_type and skin_type != "all":
+            query += " AND p.skin_type = ?"
+            params.append(skin_type)
+        if category and category != "all":
+            query += " AND p.category = ?"
+            params.append(category)
+        
+        sort_map = {"sponsored": "p.is_sponsored DESC, p.views DESC, p.created_at DESC", "popular": "p.views DESC, p.created_at DESC",
+                    "newest": "p.created_at DESC", "price_low": "p.price ASC", "price_high": "p.price DESC"}
+        query += f" ORDER BY {sort_map.get(sort_by, sort_map['sponsored'])}"
+        
+        products = conn.execute(query, params).fetchall()
+        for product in products:
+            conn.execute("UPDATE products SET views = views + 1 WHERE id = ?", (product["id"],))
+        conn.commit()
         return {"success": True, "products": [dict(p) for p in products]}
-    except Exception as e:
-        return JSONResponse(status_code=500, content={"success": False, "message": str(e)})
 
 @app.get("/products/categories")
 async def get_product_categories():
-    return {"success": True, "categories": [{"id": "cleanser", "name": "Cleanser", "icon": "🧼"}, {"id": "moisturizer", "name": "Moisturizer", "icon": "💧"}, {"id": "sunscreen", "name": "Sunscreen / SPF", "icon": "☀️"}, {"id": "serum", "name": "Serum", "icon": "✨"}, {"id": "oil", "name": "Face Oil", "icon": "🌿"}, {"id": "mask", "name": "Face Mask", "icon": "🎭"}, {"id": "toner", "name": "Toner", "icon": "💦"}]}
+    return {"success": True, "categories": [
+        {"id": "cleanser", "name": "Cleanser", "icon": "🧼"}, {"id": "moisturizer", "name": "Moisturizer", "icon": "💧"},
+        {"id": "sunscreen", "name": "Sunscreen / SPF", "icon": "☀️"}, {"id": "serum", "name": "Serum", "icon": "✨"},
+        {"id": "oil", "name": "Face Oil", "icon": "🌿"}, {"id": "mask", "name": "Face Mask", "icon": "🎭"}, {"id": "toner", "name": "Toner", "icon": "💦"}
+    ]}
+
+# ============================================
+# CHAT ENDPOINT
+# ============================================
+
+import openai
+
+@app.post("/chat")
+async def chat(request: dict, user_id: str = Depends(verify_token)):
+    user_message = request.get('message', '')
+    if not user_message:
+        return {"success": False, "response": "Tafadhali uliza swali."}
+    openai.api_key = os.getenv('OPENAI_API_KEY', '')
+    if not openai.api_key:
+        return {"success": False, "response": "AI chat is not configured yet."}
+    try:
+        response = openai.ChatCompletion.create(model="gpt-3.5-turbo", messages=[
+            {"role": "system", "content": "You are a professional African skincare advisor. Give short, practical advice."},
+            {"role": "user", "content": user_message}
+        ], max_tokens=300, temperature=0.7)
+        return {"success": True, "response": response.choices[0].message.content}
+    except Exception as e:
+        return {"success": False, "response": "Samahani, nahitaji muda kidogo. Jaribu tena."}
 
 # ============================================
 # RUN SERVER
@@ -890,11 +870,8 @@ if __name__ == "__main__":
     print("=" * 60)
     print(f"✅ MediaPipe: {'Available' if MEDIAPIPE_AVAILABLE else 'Not available'}")
     print(f"✅ Weather API: {'Configured' if WEATHER_API_KEY else 'Not configured'}")
-    print(f"✅ One Call API 3.0: {'Enabled' if WEATHER_API_KEY else 'Disabled'}")
-    print(f"✅ Skin types: {len(SKIN_CARE_DATA)}")
     print(f"✅ Database: SQLite with full vendor/admin tables")
     print("=" * 60)
     print(f"🚀 Server starting on port {port}...")
-    print(f"📚 API Docs: https://skinglow-backend.up.railway.app/docs")
     print("=" * 60)
     uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")
