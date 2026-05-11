@@ -20,6 +20,7 @@ from pydantic import BaseModel
 import uuid
 import sqlite3
 import hashlib
+import asyncio
 
 # Load environment variables
 load_dotenv()
@@ -176,9 +177,6 @@ def init_db():
         
         conn.commit()
         print("✅ Database initialized successfully!")
-        print("   - users table (with timestamps)")
-        print("   - analyses table (history)")
-        print("   - stores, products, orders tables")
 
 # Initialize database
 init_db()
@@ -274,10 +272,177 @@ except Exception as e:
     print(f"⚠️ MediaPipe error: {e}")
 
 # ============================================
-# WEATHER API CONFIGURATION
+# WEATHER API CONFIGURATION (One Call 3.0)
 # ============================================
 WEATHER_API_KEY = os.getenv('OPENWEATHER_API_KEY', '')
 WEATHER_API_URL = "https://api.openweathermap.org/data/2.5"
+
+# ============================================
+# REVERSE GEOCODING (Get City Name)
+# ============================================
+
+async def get_city_from_coordinates(lat: float, lon: float) -> str:
+    """Get city name from coordinates using OpenStreetMap Nominatim"""
+    try:
+        geocode_url = f"https://nominatim.openstreetmap.org/reverse?lat={lat}&lon={lon}&format=json"
+        response = requests.get(geocode_url, headers={'User-Agent': 'SkinGlowApp/1.0'}, timeout=10)
+        
+        if response.status_code == 200:
+            data = response.json()
+            city = data.get('address', {}).get('city') or \
+                   data.get('address', {}).get('town') or \
+                   data.get('address', {}).get('village') or \
+                   'Unknown'
+            return city
+        return 'Unknown'
+    except Exception:
+        return 'Unknown'
+
+# ============================================
+# WEATHER DATA (One Call API 3.0)
+# ============================================
+
+def get_weather_data(lat: float, lon: float) -> Dict:
+    """Get weather and UV data from OpenWeatherMap One Call API 3.0"""
+    if not WEATHER_API_KEY:
+        return {
+            "success": False,
+            "error": "Weather API key not configured",
+            "uv_index": 5,
+            "temperature": 25,
+            "city": "Unknown"
+        }
+    
+    try:
+        # ============================================
+        # USE ONE CALL API 3.0 (After subscription)
+        # ============================================
+        onecall_url = "https://api.openweathermap.org/data/3.0/onecall"
+        params = {
+            'lat': lat,
+            'lon': lon,
+            'appid': WEATHER_API_KEY,
+            'units': 'metric'
+        }
+        
+        response = requests.get(onecall_url, params=params, timeout=10)
+        data = response.json()
+        
+        if response.status_code != 200:
+            print(f"One Call API Error: {data.get('message', 'Unknown error')}")
+            return get_weather_data_fallback(lat, lon)
+        
+        current = data.get('current', {})
+        
+        # Get UV Index from One Call API
+        uv_index = current.get('uvi', 5)
+        temperature = current.get('temp', 25)
+        humidity = current.get('humidity', 60)
+        weather_condition = current.get('weather', [{}])[0].get('description', 'clear')
+        
+        # Get city name - run async function
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        city_name = loop.run_until_complete(get_city_from_coordinates(lat, lon))
+        
+        print(f"🌤️ One Call API - UV: {uv_index}, Temp: {temperature}°C, City: {city_name}")
+        
+        return {
+            "success": True,
+            "temperature": temperature,
+            "humidity": humidity,
+            "condition": weather_condition,
+            "uv_index": uv_index,
+            "city": city_name
+        }
+        
+    except Exception as e:
+        print(f"One Call API error: {e}")
+        return get_weather_data_fallback(lat, lon)
+
+def get_weather_data_fallback(lat: float, lon: float) -> Dict:
+    """Fallback to old Current Weather API if One Call fails"""
+    try:
+        weather_url = f"{WEATHER_API_URL}/weather"
+        weather_params = {
+            'lat': lat,
+            'lon': lon,
+            'appid': WEATHER_API_KEY,
+            'units': 'metric'
+        }
+        weather_response = requests.get(weather_url, params=weather_params, timeout=10)
+        weather_data = weather_response.json()
+        
+        # Estimate UV based on time (old API doesn't have UV)
+        current_hour = datetime.now().hour
+        if 6 <= current_hour <= 18:
+            uv_index = 5
+        else:
+            uv_index = 0
+        
+        return {
+            "success": True,
+            "temperature": weather_data.get('main', {}).get('temp', 25),
+            "humidity": weather_data.get('main', {}).get('humidity', 60),
+            "condition": weather_data.get('weather', [{}])[0].get('description', 'clear'),
+            "uv_index": uv_index,
+            "city": weather_data.get('name', 'Unknown')
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "uv_index": 5,
+            "temperature": 25,
+            "city": "Unknown"
+        }
+
+def get_sunscreen_recommendation(uv_index: float, skin_type: str) -> Dict:
+    """Get sunscreen recommendation based on UV index and skin type"""
+    
+    if uv_index <= 2:
+        uv_level = "Low"
+        base_spf = 15
+        advice = "Minimal UV risk. Daily protection still recommended."
+    elif uv_index <= 5:
+        uv_level = "Moderate"
+        base_spf = 30
+        advice = "Moderate UV. Sunscreen required for outdoor activities."
+    elif uv_index <= 7:
+        uv_level = "High"
+        base_spf = 50
+        advice = "High UV. Strong protection needed."
+    elif uv_index <= 10:
+        uv_level = "Very High"
+        base_spf = 50
+        advice = "Very high UV. Maximum protection required."
+    else:
+        uv_level = "Extreme"
+        base_spf = 50
+        advice = "EXTREME UV! Avoid sun exposure if possible."
+    
+    skin_advice = {
+        'dry': "Use hydrating sunscreen with moisturizing ingredients",
+        'oily': "Use oil-free, non-comedogenic sunscreen",
+        'combination': "Use lightweight, balancing sunscreen",
+        'sensitive': "Use mineral sunscreen with zinc oxide",
+        'normal': "Use broad-spectrum sunscreen"
+    }
+    
+    return {
+        "uv_index": uv_index,
+        "uv_level": uv_level,
+        "advice": advice,
+        "recommended_spf": base_spf,
+        "reapplication_hours": 2 if uv_index > 5 else 4,
+        "skin_advice": skin_advice.get(skin_type, skin_advice['normal']),
+        "tips": [
+            "Apply sunscreen 15-20 minutes before sun exposure",
+            f"Reapply every {2 if uv_index > 5 else 4} hours",
+            "Use 1/2 teaspoon for face and neck",
+            "Don't forget ears, lips, and back of hands"
+        ]
+    }
 
 # ============================================
 # SKIN CARE DATABASE
@@ -475,103 +640,6 @@ def analyze_with_fallback(image_bytes: bytes) -> Dict:
             "method": "Default"
         }
 
-def get_weather_data(lat: float, lon: float) -> Dict:
-    """Get weather and UV data from OpenWeatherMap"""
-    if not WEATHER_API_KEY:
-        return {
-            "success": False,
-            "error": "Weather API key not configured",
-            "uv_index": 5,
-            "temperature": 25,
-            "city": "Unknown"
-        }
-    
-    try:
-        weather_url = f"{WEATHER_API_URL}/weather"
-        weather_params = {
-            'lat': lat,
-            'lon': lon,
-            'appid': WEATHER_API_KEY,
-            'units': 'metric'
-        }
-        weather_response = requests.get(weather_url, params=weather_params, timeout=10)
-        weather_data = weather_response.json()
-        
-        uv_url = f"https://api.openweathermap.org/data/2.5/uvi"
-        uv_params = {
-            'lat': lat,
-            'lon': lon,
-            'appid': WEATHER_API_KEY
-        }
-        uv_response = requests.get(uv_url, params=uv_params, timeout=10)
-        uv_data = uv_response.json() if uv_response.status_code == 200 else {'value': 5}
-        
-        city_name = weather_data.get('name', 'Unknown')
-        
-        return {
-            "success": True,
-            "temperature": weather_data.get('main', {}).get('temp', 25),
-            "humidity": weather_data.get('main', {}).get('humidity', 60),
-            "condition": weather_data.get('weather', [{}])[0].get('description', 'clear'),
-            "uv_index": uv_data.get('value', 5),
-            "city": city_name
-        }
-    except Exception as e:
-        return {
-            "success": False,
-            "error": str(e),
-            "uv_index": 5,
-            "temperature": 25,
-            "city": "Unknown"
-        }
-
-def get_sunscreen_recommendation(uv_index: float, skin_type: str) -> Dict:
-    """Get sunscreen recommendation based on UV index and skin type"""
-    
-    if uv_index <= 2:
-        uv_level = "Low"
-        base_spf = 15
-        advice = "Minimal UV risk. Daily protection still recommended."
-    elif uv_index <= 5:
-        uv_level = "Moderate"
-        base_spf = 30
-        advice = "Moderate UV. Sunscreen required for outdoor activities."
-    elif uv_index <= 7:
-        uv_level = "High"
-        base_spf = 50
-        advice = "High UV. Strong protection needed."
-    elif uv_index <= 10:
-        uv_level = "Very High"
-        base_spf = 50
-        advice = "Very high UV. Maximum protection required."
-    else:
-        uv_level = "Extreme"
-        base_spf = 50
-        advice = "EXTREME UV! Avoid sun exposure if possible."
-    
-    skin_advice = {
-        'dry': "Use hydrating sunscreen with moisturizing ingredients",
-        'oily': "Use oil-free, non-comedogenic sunscreen",
-        'combination': "Use lightweight, balancing sunscreen",
-        'sensitive': "Use mineral sunscreen with zinc oxide",
-        'normal': "Use broad-spectrum sunscreen"
-    }
-    
-    return {
-        "uv_index": uv_index,
-        "uv_level": uv_level,
-        "advice": advice,
-        "recommended_spf": base_spf,
-        "reapplication_hours": 2 if uv_index > 5 else 4,
-        "skin_advice": skin_advice.get(skin_type, skin_advice['normal']),
-        "tips": [
-            "Apply sunscreen 15-20 minutes before sun exposure",
-            f"Reapply every {2 if uv_index > 5 else 4} hours",
-            "Use 1/2 teaspoon for face and neck",
-            "Don't forget ears, lips, and back of hands"
-        ]
-    }
-
 # ============================================
 # API ENDPOINTS
 # ============================================
@@ -641,35 +709,24 @@ async def get_sunscreen(uv_index: float, skin_type: str = "normal"):
     }
 
 # ============================================
-# WEATHER ENDPOINTS
+# WEATHER ENDPOINTS (UPDATED with One Call API)
 # ============================================
 
 @app.get("/weather/{lat}/{lon}")
 async def get_weather(
     lat: float,
     lon: float,
-    skin_type: str = "normal"
+    skin_type: str = "normal",
+    user_id: str = Depends(verify_token)
 ):
-    """Get weather and sunscreen advice"""
+    """Get weather and sunscreen advice using One Call API 3.0"""
     
     weather = get_weather_data(lat, lon)
-    
-    city_name = weather.get("city", "Unknown")
-    if city_name == "Unknown" or city_name == "":
-        try:
-            geocode_url = f"https://nominatim.openstreetmap.org/reverse?lat={lat}&lon={lon}&format=json"
-            response = requests.get(geocode_url, headers={'User-Agent': 'SkinGlowApp/1.0'}, timeout=5)
-            if response.status_code == 200:
-                data = response.json()
-                city_name = data.get('address', {}).get('city') or data.get('address', {}).get('town') or 'Unknown'
-        except:
-            pass
     
     if not weather.get("success"):
         return {
             "success": False,
             "error": weather.get("error", "Weather service unavailable"),
-            "city": city_name,
             "timestamp": datetime.now().isoformat()
         }
     
@@ -683,7 +740,7 @@ async def get_weather(
             "humidity": weather.get("humidity"),
             "condition": weather.get("condition"),
             "uv_index": uv_index,
-            "city": city_name
+            "city": weather.get("city")
         },
         "sunscreen": sunscreen,
         "timestamp": datetime.now().isoformat()
@@ -702,7 +759,6 @@ async def register(request: RegisterRequest):
         name = request.name
         
         with get_db() as conn:
-            # Check if user exists
             existing = conn.execute("SELECT id FROM users WHERE email = ?", (email,)).fetchone()
             if existing:
                 return JSONResponse(
@@ -710,7 +766,6 @@ async def register(request: RegisterRequest):
                     content={"success": False, "message": "Email already registered"}
                 )
             
-            # Create user
             user_id = str(uuid.uuid4())
             password_hash = hash_password(password)
             conn.execute(
@@ -719,7 +774,6 @@ async def register(request: RegisterRequest):
             )
             conn.commit()
         
-        # Create token
         token_data = {
             "sub": email,
             "user_id": user_id,
@@ -770,11 +824,9 @@ async def login(request: LoginRequest):
             user_role = user["role"] if user["role"] else "customer"
             member_since = user["created_at"]
             
-            # Update last_login
             conn.execute("UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE id = ?", (user_id,))
             conn.commit()
         
-        # Create token
         token_data = {
             "sub": user_email,
             "user_id": user_id,
@@ -837,7 +889,7 @@ async def get_current_user(user_id: str = Depends(verify_token)):
         )
 
 # ============================================
-# SKIN ANALYSIS ENDPOINT (WITH HISTORY SAVE)
+# SKIN ANALYSIS ENDPOINT
 # ============================================
 
 @app.post("/analyze")
@@ -850,7 +902,6 @@ async def analyze_skin(file: UploadFile = File(...), user_id: str = Depends(veri
     try:
         contents = await file.read()
         
-        # Analyze skin
         analysis = analyze_with_mediapipe(contents)
         if not analysis:
             analysis = analyze_with_fallback(contents)
@@ -861,7 +912,6 @@ async def analyze_skin(file: UploadFile = File(...), user_id: str = Depends(veri
         
         skin_data = SKIN_CARE_DATA.get(skin_type, SKIN_CARE_DATA["normal"])
         
-        # Save to database
         analysis_id = str(uuid.uuid4())
         with get_db() as conn:
             conn.execute(
@@ -957,7 +1007,6 @@ async def get_user_stats(user_id: str = Depends(verify_token)):
                     "skin_type_trends": {}
                 }
             
-            # Calculate statistics
             skin_type_counts = {}
             active_days = set()
             total_confidence = 0
@@ -971,7 +1020,6 @@ async def get_user_stats(user_id: str = Depends(verify_token)):
             total_analyses = len(analyses)
             avg_confidence = total_confidence / total_analyses if total_analyses > 0 else 0
             
-            # Calculate skin health score based on latest analysis
             latest = analyses[0]
             skin_type_scores = {
                 "normal": 92,
@@ -998,70 +1046,6 @@ async def get_user_stats(user_id: str = Depends(verify_token)):
         )
 
 # ============================================
-# ROLE MANAGEMENT ENDPOINTS
-# ============================================
-
-@app.post("/user/set-role")
-async def set_user_role(
-    request: dict,
-    user_id: str = Depends(verify_token)
-):
-    """Set user role (customer or store owner)"""
-    try:
-        role = request.get('role')
-        phone = request.get('phone')
-        address = request.get('address')
-        
-        with get_db() as conn:
-            user = conn.execute("SELECT id FROM users WHERE id = ?", (user_id,)).fetchone()
-            if not user:
-                return JSONResponse(
-                    status_code=404,
-                    content={"success": False, "message": "User not found"}
-                )
-            
-            conn.execute(
-                "UPDATE users SET role = ?, phone = ?, address = ? WHERE id = ?",
-                (role, phone, address, user_id)
-            )
-            conn.commit()
-        
-        return {
-            "success": True,
-            "message": f"Role updated to {role}",
-            "role": role
-        }
-    except Exception as e:
-        print(f"Error setting role: {str(e)}")
-        return JSONResponse(
-            status_code=500,
-            content={"success": False, "message": str(e)}
-        )
-
-@app.get("/user/role")
-async def get_user_role(user_id: str = Depends(verify_token)):
-    """Get user role"""
-    try:
-        with get_db() as conn:
-            user = conn.execute(
-                "SELECT role, phone, address FROM users WHERE id = ?",
-                (user_id,)
-            ).fetchone()
-        
-        return {
-            "success": True,
-            "role": user["role"] if user else "customer",
-            "phone": user["phone"] if user else None,
-            "address": user["address"] if user else None
-        }
-    except Exception as e:
-        print(f"Error getting role: {str(e)}")
-        return JSONResponse(
-            status_code=500,
-            content={"success": False, "message": str(e)}
-        )
-
-# ============================================
 # OPENAI CHAT ENDPOINT
 # ============================================
 
@@ -1079,7 +1063,6 @@ async def chat(request: dict, user_id: str = Depends(verify_token)):
             "response": "Tafadhali uliza swali kuhusu ngozi yako."
         }
     
-    # Get API key from environment
     openai.api_key = os.getenv('OPENAI_API_KEY', '')
     
     if not openai.api_key:
@@ -1184,6 +1167,7 @@ if __name__ == "__main__":
     print("=" * 60)
     print(f"✅ MediaPipe: {'Available' if MEDIAPIPE_AVAILABLE else 'Not available'}")
     print(f"✅ Weather API: {'Configured' if WEATHER_API_KEY else 'Not configured'}")
+    print(f"✅ One Call API 3.0: {'Enabled' if WEATHER_API_KEY else 'Disabled'}")
     print(f"✅ Skin types: {len(SKIN_CARE_DATA)}")
     print(f"✅ Database: SQLite with users, analyses tables")
     print("=" * 60)
