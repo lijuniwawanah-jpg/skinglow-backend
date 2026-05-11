@@ -1157,6 +1157,466 @@ async def get_recommended_products(
         )
 
 # ============================================
+# VENDOR & PRODUCT MANAGEMENT ENDPOINTS
+# ============================================
+
+# ============================================
+# SPONSORED PRODUCTS TABLE (Add to init_db)
+# ============================================
+
+def init_db():
+    with get_db() as conn:
+        # ... (existing tables) ...
+        
+        # ============================================
+        # SPONSORED PRODUCTS TABLE
+        # ============================================
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS sponsored_products (
+                id TEXT PRIMARY KEY,
+                product_id TEXT NOT NULL,
+                vendor_id TEXT NOT NULL,
+                amount_paid REAL NOT NULL,
+                start_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                end_date TIMESTAMP,
+                is_active INTEGER DEFAULT 1,
+                views INTEGER DEFAULT 0,
+                clicks INTEGER DEFAULT 0,
+                FOREIGN KEY (product_id) REFERENCES products(id),
+                FOREIGN KEY (vendor_id) REFERENCES users(id)
+            )
+        ''')
+        
+        # ============================================
+        # VENDOR_SUBSCRIPTIONS TABLE
+        # ============================================
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS vendor_subscriptions (
+                id TEXT PRIMARY KEY,
+                vendor_id TEXT NOT NULL,
+                plan TEXT DEFAULT 'basic',
+                amount_paid REAL,
+                start_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                end_date TIMESTAMP,
+                is_active INTEGER DEFAULT 1,
+                FOREIGN KEY (vendor_id) REFERENCES users(id)
+            )
+        ''')
+        
+        # Add is_approved column to products
+        cursor = conn.execute("PRAGMA table_info(products)")
+        columns = [col[1] for col in cursor.fetchall()]
+        if 'is_approved' not in columns:
+            conn.execute("ALTER TABLE products ADD COLUMN is_approved INTEGER DEFAULT 0")
+        if 'is_sponsored' not in columns:
+            conn.execute("ALTER TABLE products ADD COLUMN is_sponsored INTEGER DEFAULT 0")
+        if 'views' not in columns:
+            conn.execute("ALTER TABLE products ADD COLUMN views INTEGER DEFAULT 0")
+        
+        conn.commit()
+        print("✅ Database initialized with vendor tables!")
+
+# ============================================
+# VENDOR ENDPOINTS
+# ============================================
+
+@app.post("/vendor/products/add")
+async def vendor_add_product(
+    request: dict,
+    user_id: str = Depends(verify_token)
+):
+    """Vendor adds a product (requires approval)"""
+    try:
+        # Check if user is a vendor
+        with get_db() as conn:
+            user = conn.execute("SELECT role FROM users WHERE id = ?", (user_id,)).fetchone()
+            if not user or user["role"] != "vendor":
+                return JSONResponse(
+                    status_code=403,
+                    content={"success": False, "message": "Only vendors can add products"}
+                )
+        
+        name = request.get('name')
+        description = request.get('description')
+        price = request.get('price')
+        category = request.get('category')
+        skin_type = request.get('skin_type')
+        stock = request.get('stock', 0)
+        image_url = request.get('image_url', '')
+        
+        product_id = str(uuid.uuid4())
+        with get_db() as conn:
+            conn.execute(
+                """INSERT INTO products 
+                   (id, store_id, name, description, price, category, skin_type, stock, image_url, is_approved) 
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)""",
+                (product_id, user_id, name, description, price, category, skin_type, stock, image_url)
+            )
+            conn.commit()
+        
+        return {
+            "success": True,
+            "message": "Product submitted for approval",
+            "product_id": product_id
+        }
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "message": str(e)}
+        )
+
+@app.get("/vendor/products")
+async def vendor_get_products(user_id: str = Depends(verify_token)):
+    """Vendor gets their products"""
+    try:
+        with get_db() as conn:
+            products = conn.execute(
+                """SELECT id, name, description, price, category, skin_type, 
+                          stock, is_approved, is_sponsored, views, created_at 
+                   FROM products WHERE store_id = ? 
+                   ORDER BY created_at DESC""",
+                (user_id,)
+            ).fetchall()
+        
+        return {
+            "success": True,
+            "products": [dict(p) for p in products]
+        }
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "message": str(e)}
+        )
+
+@app.post("/vendor/sponsor")
+async def sponsor_product(
+    request: dict,
+    user_id: str = Depends(verify_token)
+):
+    """Vendor sponsors a product (paid feature)"""
+    try:
+        product_id = request.get('product_id')
+        amount = request.get('amount', 0)
+        days = request.get('days', 7)
+        
+        with get_db() as conn:
+            # Check if product belongs to vendor
+            product = conn.execute(
+                "SELECT id, is_approved FROM products WHERE id = ? AND store_id = ?",
+                (product_id, user_id)
+            ).fetchone()
+            
+            if not product:
+                return JSONResponse(
+                    status_code=404,
+                    content={"success": False, "message": "Product not found"}
+                )
+            
+            if product["is_approved"] == 0:
+                return JSONResponse(
+                    status_code=400,
+                    content={"success": False, "message": "Product must be approved first"}
+                )
+            
+            # Create sponsored record
+            sponsored_id = str(uuid.uuid4())
+            end_date = datetime.now() + timedelta(days=days)
+            
+            conn.execute(
+                """INSERT INTO sponsored_products 
+                   (id, product_id, vendor_id, amount_paid, end_date) 
+                   VALUES (?, ?, ?, ?, ?)""",
+                (sponsored_id, product_id, user_id, amount, end_date)
+            )
+            conn.execute("UPDATE products SET is_sponsored = 1 WHERE id = ?", (product_id,))
+            conn.commit()
+        
+        return {
+            "success": True,
+            "message": f"Product sponsored for {days} days",
+            "end_date": end_date.isoformat()
+        }
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "message": str(e)}
+        )
+
+@app.get("/vendor/stats")
+async def vendor_stats(user_id: str = Depends(verify_token)):
+    """Vendor gets their sales statistics"""
+    try:
+        with get_db() as conn:
+            # Get total products
+            products = conn.execute(
+                "SELECT COUNT(*) as total FROM products WHERE store_id = ?",
+                (user_id,)
+            ).fetchone()
+            
+            # Get total sales
+            sales = conn.execute(
+                """SELECT SUM(oi.quantity * oi.price) as revenue, COUNT(DISTINCT o.id) as orders
+                   FROM orders o
+                   JOIN order_items oi ON o.id = oi.order_id
+                   JOIN products p ON oi.product_id = p.id
+                   WHERE p.store_id = ? AND o.status = 'delivered'""",
+                (user_id,)
+            ).fetchone()
+            
+            # Get product views
+            views = conn.execute(
+                "SELECT SUM(views) as total_views FROM products WHERE store_id = ?",
+                (user_id,)
+            ).fetchone()
+            
+            return {
+                "success": True,
+                "total_products": products["total"] if products else 0,
+                "total_revenue": sales["revenue"] if sales and sales["revenue"] else 0,
+                "total_orders": sales["orders"] if sales else 0,
+                "total_views": views["total_views"] if views else 0
+            }
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "message": str(e)}
+        )
+
+# ============================================
+# SUPER ADMIN ENDPOINTS
+# ============================================
+
+@app.get("/admin/stats")
+async def admin_stats(user_id: str = Depends(verify_token)):
+    """Super admin gets platform statistics"""
+    try:
+        with get_db() as conn:
+            # Check if user is admin
+            user = conn.execute("SELECT role FROM users WHERE id = ?", (user_id,)).fetchone()
+            if not user or user["role"] != "admin":
+                return JSONResponse(
+                    status_code=403,
+                    content={"success": False, "message": "Admin access required"}
+                )
+            
+            # Get counts
+            total_users = conn.execute("SELECT COUNT(*) as count FROM users").fetchone()
+            total_vendors = conn.execute("SELECT COUNT(*) as count FROM users WHERE role = 'vendor'").fetchone()
+            total_products = conn.execute("SELECT COUNT(*) as count FROM products").fetchone()
+            pending_products = conn.execute("SELECT COUNT(*) as count FROM products WHERE is_approved = 0").fetchone()
+            total_orders = conn.execute("SELECT COUNT(*) as count FROM orders").fetchone()
+            total_revenue = conn.execute("SELECT SUM(total_amount) as total FROM orders WHERE status = 'delivered'").fetchone()
+            
+            # Get recent users
+            recent_users = conn.execute(
+                "SELECT id, email, name, role, created_at FROM users ORDER BY created_at DESC LIMIT 10"
+            ).fetchall()
+            
+            # Get pending products
+            pending_products_list = conn.execute(
+                """SELECT p.*, u.name as vendor_name 
+                   FROM products p 
+                   JOIN users u ON p.store_id = u.id 
+                   WHERE p.is_approved = 0 
+                   ORDER BY p.created_at DESC"""
+            ).fetchall()
+            
+            return {
+                "success": True,
+                "stats": {
+                    "total_users": total_users["count"] if total_users else 0,
+                    "total_vendors": total_vendors["count"] if total_vendors else 0,
+                    "total_products": total_products["count"] if total_products else 0,
+                    "pending_products": pending_products["count"] if pending_products else 0,
+                    "total_orders": total_orders["count"] if total_orders else 0,
+                    "total_revenue": total_revenue["total"] if total_revenue and total_revenue["total"] else 0
+                },
+                "recent_users": [dict(u) for u in recent_users],
+                "pending_products": [dict(p) for p in pending_products_list]
+            }
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "message": str(e)}
+        )
+
+@app.post("/admin/approve-product/{product_id}")
+async def approve_product(product_id: str, user_id: str = Depends(verify_token)):
+    """Super admin approves a product"""
+    try:
+        with get_db() as conn:
+            user = conn.execute("SELECT role FROM users WHERE id = ?", (user_id,)).fetchone()
+            if not user or user["role"] != "admin":
+                return JSONResponse(
+                    status_code=403,
+                    content={"success": False, "message": "Admin access required"}
+                )
+            
+            conn.execute("UPDATE products SET is_approved = 1 WHERE id = ?", (product_id,))
+            conn.commit()
+        
+        return {
+            "success": True,
+            "message": "Product approved successfully"
+        }
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "message": str(e)}
+        )
+
+@app.post("/admin/reject-product/{product_id}")
+async def reject_product(product_id: str, user_id: str = Depends(verify_token)):
+    """Super admin rejects a product"""
+    try:
+        with get_db() as conn:
+            user = conn.execute("SELECT role FROM users WHERE id = ?", (user_id,)).fetchone()
+            if not user or user["role"] != "admin":
+                return JSONResponse(
+                    status_code=403,
+                    content={"success": False, "message": "Admin access required"}
+                )
+            
+            conn.execute("DELETE FROM products WHERE id = ?", (product_id,))
+            conn.commit()
+        
+        return {
+            "success": True,
+            "message": "Product rejected and deleted"
+        }
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "message": str(e)}
+        )
+
+@app.post("/admin/delete-user/{target_user_id}")
+async def admin_delete_user(target_user_id: str, user_id: str = Depends(verify_token)):
+    """Super admin deletes a user"""
+    try:
+        with get_db() as conn:
+            admin = conn.execute("SELECT role FROM users WHERE id = ?", (user_id,)).fetchone()
+            if not admin or admin["role"] != "admin":
+                return JSONResponse(
+                    status_code=403,
+                    content={"success": False, "message": "Admin access required"}
+                )
+            
+            conn.execute("DELETE FROM users WHERE id = ?", (target_user_id,))
+            conn.commit()
+        
+        return {
+            "success": True,
+            "message": "User deleted successfully"
+        }
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "message": str(e)}
+        )
+
+@app.post("/admin/set-vendor-role/{target_user_id}")
+async def set_vendor_role(target_user_id: str, user_id: str = Depends(verify_token)):
+    """Super admin sets user as vendor"""
+    try:
+        with get_db() as conn:
+            admin = conn.execute("SELECT role FROM users WHERE id = ?", (user_id,)).fetchone()
+            if not admin or admin["role"] != "admin":
+                return JSONResponse(
+                    status_code=403,
+                    content={"success": False, "message": "Admin access required"}
+                )
+            
+            conn.execute("UPDATE users SET role = 'vendor' WHERE id = ?", (target_user_id,))
+            conn.commit()
+        
+        return {
+            "success": True,
+            "message": "User role updated to vendor"
+        }
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "message": str(e)}
+        )
+
+# ============================================
+# CUSTOMER PRODUCTS ENDPOINT (UPDATED)
+# ============================================
+
+@app.get("/products/customer")
+async def get_customer_products(
+    skin_type: str = None,
+    category: str = None,
+    sort_by: str = "sponsored",
+    user_id: str = Depends(verify_token)
+):
+    """Get products for customers with filtering and sorting"""
+    try:
+        with get_db() as conn:
+            query = """
+                SELECT p.*, u.name as vendor_name 
+                FROM products p 
+                JOIN users u ON p.store_id = u.id 
+                WHERE p.is_approved = 1
+            """
+            params = []
+            
+            if skin_type and skin_type != "all":
+                query += " AND p.skin_type = ?"
+                params.append(skin_type)
+            
+            if category and category != "all":
+                query += " AND p.category = ?"
+                params.append(category)
+            
+            if sort_by == "sponsored":
+                query += " ORDER BY p.is_sponsored DESC, p.views DESC, p.created_at DESC"
+            elif sort_by == "popular":
+                query += " ORDER BY p.views DESC, p.created_at DESC"
+            elif sort_by == "newest":
+                query += " ORDER BY p.created_at DESC"
+            elif sort_by == "price_low":
+                query += " ORDER BY p.price ASC"
+            elif sort_by == "price_high":
+                query += " ORDER BY p.price DESC"
+            else:
+                query += " ORDER BY p.is_sponsored DESC, p.created_at DESC"
+            
+            products = conn.execute(query, params).fetchall()
+            
+            # Increment views for products
+            for product in products:
+                conn.execute("UPDATE products SET views = views + 1 WHERE id = ?", (product["id"],))
+            conn.commit()
+        
+        return {
+            "success": True,
+            "products": [dict(p) for p in products]
+        }
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "message": str(e)}
+        )
+
+@app.get("/products/categories")
+async def get_product_categories():
+    """Get all product categories"""
+    return {
+        "success": True,
+        "categories": [
+            {"id": "cleanser", "name": "Cleanser", "icon": "🧼"},
+            {"id": "moisturizer", "name": "Moisturizer", "icon": "💧"},
+            {"id": "sunscreen", "name": "Sunscreen / SPF", "icon": "☀️"},
+            {"id": "serum", "name": "Serum", "icon": "✨"},
+            {"id": "oil", "name": "Face Oil", "icon": "🌿"},
+            {"id": "mask", "name": "Face Mask", "icon": "🎭"},
+            {"id": "toner", "name": "Toner", "icon": "💦"}
+        ]
+    }
+
+# ============================================
 # RUN SERVER
 # ============================================
 if __name__ == "__main__":
