@@ -1617,6 +1617,91 @@ async def get_product_categories():
     }
 
 # ============================================
+# VENDOR APPROVAL SYSTEM
+# ============================================
+
+@app.get("/admin/pending-vendors")
+async def get_pending_vendors(user_id: str = Depends(verify_token)):
+    """Admin gets pending vendor approvals"""
+    try:
+        with get_db() as conn:
+            # Check if user is admin
+            user = conn.execute("SELECT role FROM users WHERE id = ?", (user_id,)).fetchone()
+            if not user or user["role"] != "admin":
+                return JSONResponse(
+                    status_code=403,
+                    content={"success": False, "message": "Admin access required"}
+                )
+            
+            pending_vendors = conn.execute(
+                """SELECT id, email, name, phone, address, created_at 
+                   FROM users 
+                   WHERE role = 'vendor' AND is_approved = 0
+                   ORDER BY created_at DESC""",
+                ()
+            ).fetchall()
+        
+        return {
+            "success": True,
+            "vendors": [dict(v) for v in pending_vendors]
+        }
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "message": str(e)}
+        )
+
+@app.post("/admin/approve-vendor/{vendor_id}")
+async def approve_vendor(vendor_id: str, user_id: str = Depends(verify_token)):
+    """Admin approves a vendor"""
+    try:
+        with get_db() as conn:
+            admin = conn.execute("SELECT role FROM users WHERE id = ?", (user_id,)).fetchone()
+            if not admin or admin["role"] != "admin":
+                return JSONResponse(
+                    status_code=403,
+                    content={"success": False, "message": "Admin access required"}
+                )
+            
+            conn.execute("UPDATE users SET is_approved = 1 WHERE id = ?", (vendor_id,))
+            conn.commit()
+        
+        return {
+            "success": True,
+            "message": "Vendor approved successfully"
+        }
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "message": str(e)}
+        )
+
+@app.post("/admin/reject-vendor/{vendor_id}")
+async def reject_vendor(vendor_id: str, user_id: str = Depends(verify_token)):
+    """Admin rejects a vendor application"""
+    try:
+        with get_db() as conn:
+            admin = conn.execute("SELECT role FROM users WHERE id = ?", (user_id,)).fetchone()
+            if not admin or admin["role"] != "admin":
+                return JSONResponse(
+                    status_code=403,
+                    content={"success": False, "message": "Admin access required"}
+                )
+            
+            # Delete or mark as rejected
+            conn.execute("DELETE FROM users WHERE id = ?", (vendor_id,))
+            conn.commit()
+        
+        return {
+            "success": True,
+            "message": "Vendor application rejected"
+        }
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "message": str(e)}
+        )
+# ============================================
 # RUN SERVER
 # ============================================
 if __name__ == "__main__":
