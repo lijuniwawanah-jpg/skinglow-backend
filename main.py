@@ -21,7 +21,6 @@ import uuid
 import sqlite3
 import hashlib
 import asyncio
-import numpy as np
 
 # Load environment variables
 load_dotenv()
@@ -279,143 +278,20 @@ class LoginRequest(BaseModel):
     password: str
 
 # ============================================
-# MEDIAPIPE (Optional - No OpenCV needed)
+# MEDIAPIPE (Optional)
 # ============================================
 MEDIAPIPE_AVAILABLE = False
 try:
     import mediapipe as mp
+    import cv2
+    import numpy as np
+    os.environ['GLOG_minloglevel'] = '2'
     mp_face_detection = mp.solutions.face_detection
     face_detection = mp_face_detection.FaceDetection(model_selection=1, min_detection_confidence=0.5)
     MEDIAPIPE_AVAILABLE = True
     print("✅ MediaPipe loaded!")
-except Exception as e:
-    print(f"⚠️ MediaPipe not available: {e}")
-
-# ============================================
-# IMAGE PREPROCESSING (PIL only - No OpenCV)
-# ============================================
-
-def standardize_image(image_bytes: bytes) -> Image.Image:
-    """Standardize image using PIL only"""
-    image = Image.open(io.BytesIO(image_bytes))
-    if image.mode != 'RGB':
-        image = image.convert('RGB')
-    image = image.resize((500, 500), Image.LANCZOS)
-    return image
-
-# ============================================
-# SKIN ANALYSIS FUNCTIONS (No OpenCV)
-# ============================================
-
-def analyze_with_mediapipe(image_bytes: bytes) -> Optional[Dict]:
-    """Analyze skin using MediaPipe"""
-    if not MEDIAPIPE_AVAILABLE:
-        return None
-    
-    try:
-        # Standardize image
-        pil_image = standardize_image(image_bytes)
-        img_array = np.array(pil_image)
-        
-        # MediaPipe needs RGB format
-        img_rgb = img_array.copy()
-        
-        # Detect face
-        results = face_detection.process(img_rgb)
-        
-        if results.detections:
-            h, w, _ = img_array.shape
-            detection = results.detections[0]
-            bbox = detection.location_data.relative_bounding_box
-            x = max(0, int(bbox.xmin * w))
-            y = max(0, int(bbox.ymin * h))
-            width = min(w - x, int(bbox.width * w))
-            height = min(h - y, int(bbox.height * h))
-            
-            face_region = img_array[y:y+height, x:x+width]
-            
-            if face_region.size > 0:
-                # Convert to grayscale using numpy
-                gray = np.dot(face_region[..., :3], [0.299, 0.587, 0.114])
-                
-                texture_var = np.var(gray)
-                avg_brightness = np.mean(gray)
-                
-                # Determine skin type
-                if texture_var > 3000:
-                    skin_type = "oily"
-                    confidence = 0.85
-                elif texture_var < 1500:
-                    skin_type = "dry"
-                    confidence = 0.85
-                elif avg_brightness > 180:
-                    skin_type = "sensitive"
-                    confidence = 0.80
-                elif 100 < avg_brightness < 150:
-                    skin_type = "combination"
-                    confidence = 0.80
-                else:
-                    skin_type = "normal"
-                    confidence = 0.85
-                
-                return {
-                    "skin_type": skin_type,
-                    "confidence": confidence,
-                    "method": "MediaPipe AI"
-                }
-        
-        return None
-    except Exception as e:
-        print(f"MediaPipe analysis error: {e}")
-        return None
-
-def analyze_with_fallback(image_bytes: bytes) -> Dict:
-    """Fallback analysis using PIL only"""
-    try:
-        pil_image = standardize_image(image_bytes)
-        
-        # Convert to grayscale
-        gray = pil_image.convert('L')
-        pixels = list(gray.getdata())
-        
-        avg_brightness = sum(pixels) / len(pixels)
-        variance = sum((x - avg_brightness) ** 2 for x in pixels) / len(pixels)
-        
-        if variance > 3000:
-            skin_type = "oily"
-            confidence = 0.75
-        elif variance < 1500:
-            skin_type = "dry"
-            confidence = 0.75
-        elif avg_brightness > 180:
-            skin_type = "sensitive"
-            confidence = 0.70
-        elif 100 < avg_brightness < 150:
-            skin_type = "combination"
-            confidence = 0.70
-        else:
-            skin_type = "normal"
-            confidence = 0.75
-        
-        return {
-            "skin_type": skin_type,
-            "confidence": confidence,
-            "method": "Color Analysis"
-        }
-    except Exception as e:
-        print(f"Fallback error: {e}")
-        return {
-            "skin_type": "normal",
-            "confidence": 0.50,
-            "method": "Default"
-        }
-
-def analyze_with_consistency(image_bytes: bytes) -> Dict:
-    """Run analysis with consistency check"""
-    result = analyze_with_mediapipe(image_bytes)
-    if result:
-        return result
-    return analyze_with_fallback(image_bytes)
+except:
+    print("⚠️ MediaPipe not available")
 
 # ============================================
 # WEATHER API
@@ -498,6 +374,51 @@ SKIN_CARE_DATA = {
                "oils": ["Argan Oil", "Jojoba Oil", "Rosehip Oil"]}
 }
 
+def analyze_with_mediapipe(image_bytes: bytes) -> Optional[Dict]:
+    if not MEDIAPIPE_AVAILABLE:
+        return None
+    try:
+        image = Image.open(io.BytesIO(image_bytes))
+        image = np.array(image)
+        image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+        image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        results = face_detection.process(image_rgb)
+        if results.detections:
+            h, w, _ = image.shape
+            bbox = results.detections[0].location_data.relative_bounding_box
+            x, y = int(bbox.xmin * w), int(bbox.ymin * h)
+            width, height = int(bbox.width * w), int(bbox.height * h)
+            face_region = image_rgb[y:y+height, x:x+width]
+            if face_region.size > 0:
+                gray_face = cv2.cvtColor(face_region, cv2.COLOR_RGB2GRAY)
+                texture_var = np.var(gray_face)
+                if texture_var > 3000:
+                    return {"skin_type": "oily", "confidence": 0.85, "method": "MediaPipe AI"}
+                elif texture_var < 1500:
+                    return {"skin_type": "dry", "confidence": 0.85, "method": "MediaPipe AI"}
+                else:
+                    return {"skin_type": "normal", "confidence": 0.85, "method": "MediaPipe AI"}
+        return None
+    except:
+        return None
+
+def analyze_with_fallback(image_bytes: bytes) -> Dict:
+    try:
+        image = Image.open(io.BytesIO(image_bytes))
+        if image.mode != 'RGB':
+            image = image.convert('RGB')
+        pixels = list(image.getdata())
+        sample = pixels[:min(1000, len(pixels))]
+        brightness = sum(sum(p[:3])/3 for p in sample) / len(sample) if sample else 128
+        if brightness > 200:
+            return {"skin_type": "dry", "confidence": 0.70, "method": "Color Analysis"}
+        elif brightness < 80:
+            return {"skin_type": "oily", "confidence": 0.70, "method": "Color Analysis"}
+        else:
+            return {"skin_type": "normal", "confidence": 0.70, "method": "Color Analysis"}
+    except:
+        return {"skin_type": "normal", "confidence": 0.50, "method": "Default"}
+
 # ============================================
 # BASIC API ENDPOINTS
 # ============================================
@@ -527,7 +448,7 @@ async def get_weather(lat: float, lon: float, skin_type: str = "normal", user_id
     return {"success": True, "weather": weather, "sunscreen": sunscreen}
 
 # ============================================
-# AUTH ENDPOINTS
+# AUTH ENDPOINTS (WITH ROLE SUPPORT)
 # ============================================
 
 @app.post("/auth/register")
@@ -543,6 +464,7 @@ async def register(request: RegisterRequest):
             
             user_id = str(uuid.uuid4())
             password_hash = hash_password(password)
+            # Set is_approved: 1 for customer, 0 for vendor (needs admin approval)
             is_approved = 1 if role == 'customer' else 0
             
             conn.execute("""INSERT INTO users (id, email, password_hash, name, role, is_approved, phone, address, created_at) 
@@ -591,56 +513,28 @@ async def get_current_user(user_id: str = Depends(verify_token)):
         return {"success": True, "user": dict(user)}
 
 # ============================================
-# SKIN ANALYSIS ENDPOINT
+# SKIN ANALYSIS
 # ============================================
 
 @app.post("/analyze")
 async def analyze_skin(file: UploadFile = File(...), user_id: str = Depends(verify_token)):
     if not file.content_type.startswith('image/'):
         raise HTTPException(status_code=400, detail="File must be an image")
-    
     try:
         contents = await file.read()
-        
-        # Use improved consistency check
-        analysis = analyze_with_consistency(contents)
-        
-        skin_type = analysis.get("skin_type", "normal")
-        confidence = analysis.get("confidence", 0.75)
-        method = analysis.get("method", "AI Analysis")
-        
+        analysis = analyze_with_mediapipe(contents) or analyze_with_fallback(contents)
+        skin_type, confidence, method = analysis["skin_type"], analysis["confidence"], analysis["method"]
         skin_data = SKIN_CARE_DATA.get(skin_type, SKIN_CARE_DATA["normal"])
-        
-        # Save to database
         analysis_id = str(uuid.uuid4())
         with get_db() as conn:
-            conn.execute(
-                """INSERT INTO analyses (id, user_id, skin_type, skin_name, confidence, characteristics, recommendations, recommended_oils, method) 
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    analysis_id, user_id, skin_type, skin_data["name"], confidence,
-                    "|".join(skin_data["characteristics"]),
-                    "|".join(skin_data["recommendations"]),
-                    "|".join(skin_data["oils"]),
-                    method
-                )
-            )
+            conn.execute("""INSERT INTO analyses (id, user_id, skin_type, skin_name, confidence, characteristics, recommendations, recommended_oils, method) 
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (analysis_id, user_id, skin_type, skin_data["name"], confidence, 
+                         "|".join(skin_data["characteristics"]), "|".join(skin_data["recommendations"]), "|".join(skin_data["oils"]), method))
             conn.commit()
-        
-        return {
-            "success": True,
-            "skin_type": skin_type,
-            "skin_name": skin_data["name"],
-            "confidence": confidence,
-            "characteristics": skin_data["characteristics"],
-            "recommendations": skin_data["recommendations"],
-            "recommended_oils": skin_data["oils"],
-            "products": skin_data["products"],
-            "method": method,
-            "analysis_id": analysis_id,
-            "timestamp": datetime.now().isoformat()
-        }
-        
+        return {"success": True, "skin_type": skin_type, "skin_name": skin_data["name"], "confidence": confidence,
+                "characteristics": skin_data["characteristics"], "recommendations": skin_data["recommendations"],
+                "recommended_oils": skin_data["oils"], "analysis_id": analysis_id}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
 
@@ -668,7 +562,7 @@ async def get_user_stats(user_id: str = Depends(verify_token)):
                 "skin_health_score": skin_health_score, "skin_type_trends": skin_type_counts}
 
 # ============================================
-# VENDOR ENDPOINTS (Simplified)
+# VENDOR ENDPOINTS
 # ============================================
 
 @app.post("/vendor/products/add")
@@ -691,8 +585,33 @@ async def vendor_get_products(user_id: str = Depends(verify_token)):
         products = conn.execute("SELECT * FROM products WHERE store_id = ? ORDER BY created_at DESC", (user_id,)).fetchall()
         return {"success": True, "products": [dict(p) for p in products]}
 
+@app.post("/vendor/sponsor")
+async def sponsor_product(request: dict, user_id: str = Depends(verify_token)):
+    product_id, amount, days = request.get('product_id'), request.get('amount', 0), request.get('days', 7)
+    with get_db() as conn:
+        product = conn.execute("SELECT id, is_approved FROM products WHERE id = ? AND store_id = ?", (product_id, user_id)).fetchone()
+        if not product or product["is_approved"] == 0:
+            return JSONResponse(status_code=400, content={"success": False, "message": "Product not found or not approved"})
+        sponsored_id, end_date = str(uuid.uuid4()), datetime.now() + timedelta(days=days)
+        conn.execute("INSERT INTO sponsored_products (id, product_id, vendor_id, amount_paid, end_date) VALUES (?, ?, ?, ?, ?)", (sponsored_id, product_id, user_id, amount, end_date))
+        conn.execute("UPDATE products SET is_sponsored = 1 WHERE id = ?", (product_id,))
+        conn.commit()
+    return {"success": True, "message": f"Product sponsored for {days} days", "end_date": end_date.isoformat()}
+
+@app.get("/vendor/stats")
+async def vendor_stats(user_id: str = Depends(verify_token)):
+    with get_db() as conn:
+        products = conn.execute("SELECT COUNT(*) as total FROM products WHERE store_id = ?", (user_id,)).fetchone()
+        sales = conn.execute("""SELECT SUM(oi.quantity * oi.price) as revenue, COUNT(DISTINCT o.id) as orders 
+                               FROM orders o JOIN order_items oi ON o.id = oi.order_id 
+                               JOIN products p ON oi.product_id = p.id 
+                               WHERE p.store_id = ? AND o.status = 'delivered'""", (user_id,)).fetchone()
+        views = conn.execute("SELECT SUM(views) as total_views FROM products WHERE store_id = ?", (user_id,)).fetchone()
+        return {"success": True, "total_products": products["total"] or 0, "total_revenue": sales["revenue"] or 0, 
+                "total_orders": sales["orders"] or 0, "total_views": views["total_views"] or 0}
+
 # ============================================
-# SUPER ADMIN ENDPOINTS (Simplified)
+# SUPER ADMIN ENDPOINTS (FULL FEATURED)
 # ============================================
 
 @app.get("/admin/stats")
@@ -702,31 +621,147 @@ async def admin_stats(user_id: str = Depends(verify_token)):
         if not user or user["role"] != "admin":
             return JSONResponse(status_code=403, content={"success": False, "message": "Admin access required"})
         
+        # User statistics
         total_users = conn.execute("SELECT COUNT(*) as count FROM users").fetchone()["count"]
+        total_customers = conn.execute("SELECT COUNT(*) as count FROM users WHERE role = 'customer'").fetchone()["count"]
         total_vendors = conn.execute("SELECT COUNT(*) as count FROM users WHERE role = 'vendor'").fetchone()["count"]
         pending_vendors = conn.execute("SELECT COUNT(*) as count FROM users WHERE role = 'vendor' AND is_approved = 0").fetchone()["count"]
+        
+        # Product statistics
         total_products = conn.execute("SELECT COUNT(*) as count FROM products").fetchone()["count"]
         pending_products = conn.execute("SELECT COUNT(*) as count FROM products WHERE is_approved = 0").fetchone()["count"]
+        sponsored_products = conn.execute("SELECT COUNT(*) as count FROM products WHERE is_sponsored = 1 AND is_approved = 1").fetchone()["count"]
+        
+        # Order statistics
+        total_orders = conn.execute("SELECT COUNT(*) as count FROM orders").fetchone()["count"]
+        pending_orders = conn.execute("SELECT COUNT(*) as count FROM orders WHERE status = 'pending'").fetchone()["count"]
+        completed_orders = conn.execute("SELECT COUNT(*) as count FROM orders WHERE status = 'delivered'").fetchone()["count"]
         total_revenue = conn.execute("SELECT SUM(total_amount) as total FROM orders WHERE status = 'delivered'").fetchone()["total"] or 0
         
+        # Get all users with details
+        all_users = conn.execute("SELECT id, email, name, role, is_approved, phone, address, created_at, last_login FROM users ORDER BY created_at DESC").fetchall()
+        
+        # Get all vendors with details
+        all_vendors = conn.execute("SELECT id, email, name, role, is_approved, phone, address, created_at FROM users WHERE role = 'vendor' ORDER BY created_at DESC").fetchall()
+        
+        # Get pending vendors
         pending_vendors_list = conn.execute("SELECT id, email, name, phone, address, created_at FROM users WHERE role = 'vendor' AND is_approved = 0 ORDER BY created_at DESC").fetchall()
-        pending_products_list = conn.execute("""SELECT p.*, u.name as vendor_name 
+        
+        # Get pending products with vendor names
+        pending_products_list = conn.execute("""SELECT p.*, u.name as vendor_name, u.email as vendor_email 
                                                FROM products p JOIN users u ON p.store_id = u.id 
                                                WHERE p.is_approved = 0 ORDER BY p.created_at DESC""").fetchall()
+        
+        # Get recent analyses
+        recent_analyses = conn.execute("""SELECT a.*, u.name as user_name, u.email as user_email 
+                                         FROM analyses a JOIN users u ON a.user_id = u.id 
+                                         ORDER BY a.created_at DESC LIMIT 20""").fetchall()
         
         return {
             "success": True,
             "stats": {
-                "total_users": total_users,
-                "total_vendors": total_vendors,
-                "pending_vendors": pending_vendors,
-                "total_products": total_products,
-                "pending_products": pending_products,
-                "total_revenue": total_revenue
+                "users": {"total": total_users, "customers": total_customers, "vendors": total_vendors, "pending_vendors": pending_vendors},
+                "products": {"total": total_products, "pending": pending_products, "sponsored": sponsored_products},
+                "orders": {"total": total_orders, "pending": pending_orders, "completed": completed_orders, "revenue": total_revenue}
             },
+            "all_users": [dict(u) for u in all_users],
+            "all_vendors": [dict(v) for v in all_vendors],
             "pending_vendors": [dict(v) for v in pending_vendors_list],
-            "pending_products": [dict(p) for p in pending_products_list]
+            "pending_products": [dict(p) for p in pending_products_list],
+            "recent_analyses": [dict(a) for a in recent_analyses]
         }
+
+@app.get("/admin/users")
+async def admin_get_users(user_id: str = Depends(verify_token)):
+    with get_db() as conn:
+        user = conn.execute("SELECT role FROM users WHERE id = ?", (user_id,)).fetchone()
+        if not user or user["role"] != "admin":
+            return JSONResponse(status_code=403, content={"success": False, "message": "Admin access required"})
+        
+        users = conn.execute("SELECT id, email, name, role, is_approved, phone, address, created_at, last_login FROM users ORDER BY created_at DESC").fetchall()
+        return {"success": True, "users": [dict(u) for u in users]}
+
+@app.get("/admin/user/{target_user_id}")
+async def admin_get_user(target_user_id: str, user_id: str = Depends(verify_token)):
+    with get_db() as conn:
+        admin = conn.execute("SELECT role FROM users WHERE id = ?", (user_id,)).fetchone()
+        if not admin or admin["role"] != "admin":
+            return JSONResponse(status_code=403, content={"success": False, "message": "Admin access required"})
+        
+        # Get user details
+        user = conn.execute("SELECT id, email, name, role, is_approved, phone, address, created_at, last_login FROM users WHERE id = ?", (target_user_id,)).fetchone()
+        if not user:
+            return JSONResponse(status_code=404, content={"success": False, "message": "User not found"})
+        
+        # Get user's analyses
+        analyses = conn.execute("SELECT id, skin_type, skin_name, confidence, created_at FROM analyses WHERE user_id = ? ORDER BY created_at DESC", (target_user_id,)).fetchall()
+        
+        # Get user's orders
+        orders = conn.execute("SELECT id, status, total_amount, created_at FROM orders WHERE user_id = ? ORDER BY created_at DESC", (target_user_id,)).fetchall()
+        
+        return {
+            "success": True,
+            "user": dict(user),
+            "analyses": [dict(a) for a in analyses],
+            "orders": [dict(o) for o in orders]
+        }
+
+@app.get("/admin/vendors")
+async def admin_get_vendors(user_id: str = Depends(verify_token)):
+    with get_db() as conn:
+        user = conn.execute("SELECT role FROM users WHERE id = ?", (user_id,)).fetchone()
+        if not user or user["role"] != "admin":
+            return JSONResponse(status_code=403, content={"success": False, "message": "Admin access required"})
+        
+        vendors = conn.execute("SELECT id, email, name, is_approved, phone, address, created_at FROM users WHERE role = 'vendor' ORDER BY created_at DESC").fetchall()
+        
+        # Get product count for each vendor
+        result = []
+        for vendor in vendors:
+            product_count = conn.execute("SELECT COUNT(*) as count FROM products WHERE store_id = ?", (vendor["id"],)).fetchone()["count"]
+            vendor_dict = dict(vendor)
+            vendor_dict["product_count"] = product_count
+            result.append(vendor_dict)
+        
+        return {"success": True, "vendors": result}
+
+@app.get("/admin/vendor/{vendor_id}")
+async def admin_get_vendor(vendor_id: str, user_id: str = Depends(verify_token)):
+    with get_db() as conn:
+        admin = conn.execute("SELECT role FROM users WHERE id = ?", (user_id,)).fetchone()
+        if not admin or admin["role"] != "admin":
+            return JSONResponse(status_code=403, content={"success": False, "message": "Admin access required"})
+        
+        vendor = conn.execute("SELECT id, email, name, is_approved, phone, address, created_at FROM users WHERE id = ? AND role = 'vendor'", (vendor_id,)).fetchone()
+        if not vendor:
+            return JSONResponse(status_code=404, content={"success": False, "message": "Vendor not found"})
+        
+        products = conn.execute("SELECT id, name, price, category, skin_type, stock, is_approved, is_sponsored, views, created_at FROM products WHERE store_id = ? ORDER BY created_at DESC", (vendor_id,)).fetchall()
+        orders = conn.execute("""SELECT o.id, o.status, o.total_amount, o.created_at, COUNT(oi.id) as items 
+                                FROM orders o JOIN order_items oi ON o.id = oi.order_id 
+                                WHERE o.store_id = ? GROUP BY o.id ORDER BY o.created_at DESC""", (vendor_id,)).fetchall()
+        
+        return {"success": True, "vendor": dict(vendor), "products": [dict(p) for p in products], "orders": [dict(o) for o in orders]}
+
+@app.post("/admin/approve-vendor/{vendor_id}")
+async def approve_vendor(vendor_id: str, user_id: str = Depends(verify_token)):
+    with get_db() as conn:
+        admin = conn.execute("SELECT role FROM users WHERE id = ?", (user_id,)).fetchone()
+        if not admin or admin["role"] != "admin":
+            return JSONResponse(status_code=403, content={"success": False, "message": "Admin access required"})
+        conn.execute("UPDATE users SET is_approved = 1 WHERE id = ? AND role = 'vendor'", (vendor_id,))
+        conn.commit()
+    return {"success": True, "message": "Vendor approved successfully"}
+
+@app.post("/admin/reject-vendor/{vendor_id}")
+async def reject_vendor(vendor_id: str, user_id: str = Depends(verify_token)):
+    with get_db() as conn:
+        admin = conn.execute("SELECT role FROM users WHERE id = ?", (user_id,)).fetchone()
+        if not admin or admin["role"] != "admin":
+            return JSONResponse(status_code=403, content={"success": False, "message": "Admin access required"})
+        conn.execute("DELETE FROM users WHERE id = ? AND role = 'vendor'", (vendor_id,))
+        conn.commit()
+    return {"success": True, "message": "Vendor application rejected"}
 
 @app.post("/admin/approve-product/{product_id}")
 async def approve_product(product_id: str, user_id: str = Depends(verify_token)):
@@ -738,15 +773,35 @@ async def approve_product(product_id: str, user_id: str = Depends(verify_token))
         conn.commit()
     return {"success": True, "message": "Product approved successfully"}
 
-@app.post("/admin/approve-vendor/{vendor_id}")
-async def approve_vendor(vendor_id: str, user_id: str = Depends(verify_token)):
+@app.post("/admin/reject-product/{product_id}")
+async def reject_product(product_id: str, user_id: str = Depends(verify_token)):
     with get_db() as conn:
         admin = conn.execute("SELECT role FROM users WHERE id = ?", (user_id,)).fetchone()
         if not admin or admin["role"] != "admin":
             return JSONResponse(status_code=403, content={"success": False, "message": "Admin access required"})
-        conn.execute("UPDATE users SET is_approved = 1 WHERE id = ? AND role = 'vendor'", (vendor_id,))
+        conn.execute("DELETE FROM products WHERE id = ?", (product_id,))
         conn.commit()
-    return {"success": True, "message": "Vendor approved successfully"}
+    return {"success": True, "message": "Product rejected and deleted"}
+
+@app.post("/admin/delete-user/{target_user_id}")
+async def admin_delete_user(target_user_id: str, user_id: str = Depends(verify_token)):
+    with get_db() as conn:
+        admin = conn.execute("SELECT role FROM users WHERE id = ?", (user_id,)).fetchone()
+        if not admin or admin["role"] != "admin":
+            return JSONResponse(status_code=403, content={"success": False, "message": "Admin access required"})
+        conn.execute("DELETE FROM users WHERE id = ?", (target_user_id,))
+        conn.commit()
+    return {"success": True, "message": "User deleted successfully"}
+
+@app.post("/admin/set-vendor-role/{target_user_id}")
+async def set_vendor_role(target_user_id: str, user_id: str = Depends(verify_token)):
+    with get_db() as conn:
+        admin = conn.execute("SELECT role FROM users WHERE id = ?", (user_id,)).fetchone()
+        if not admin or admin["role"] != "admin":
+            return JSONResponse(status_code=403, content={"success": False, "message": "Admin access required"})
+        conn.execute("UPDATE users SET role = 'vendor', is_approved = 0 WHERE id = ?", (target_user_id,))
+        conn.commit()
+    return {"success": True, "message": "User role updated to vendor (pending approval)"}
 
 # ============================================
 # CUSTOMER PRODUCTS ENDPOINT
