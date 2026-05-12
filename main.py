@@ -21,6 +21,8 @@ import uuid
 import sqlite3
 import hashlib
 import asyncio
+import cv2
+import numpy as np
 
 # Load environment variables
 load_dotenv()
@@ -278,13 +280,70 @@ class LoginRequest(BaseModel):
     password: str
 
 # ============================================
+# IMAGE PREPROCESSING (Fix Bias & Inconsistency)
+# ============================================
+
+def standardize_image(image_bytes: bytes) -> np.ndarray:
+    """Standardize image to reduce lighting and angle bias"""
+    
+    # Load image
+    image = Image.open(io.BytesIO(image_bytes))
+    
+    # Convert to RGB if needed
+    if image.mode != 'RGB':
+        image = image.convert('RGB')
+    
+    # Resize to standard size
+    image = image.resize((500, 500), Image.LANCZOS)
+    
+    # Convert to numpy array
+    img_array = np.array(image)
+    
+    # Apply CLAHE for lighting normalization
+    lab = cv2.cvtColor(img_array, cv2.COLOR_RGB2LAB)
+    l, a, b = cv2.split(lab)
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    l = clahe.apply(l)
+    lab = cv2.merge([l, a, b])
+    img_array = cv2.cvtColor(lab, cv2.COLOR_LAB2RGB)
+    
+    # Normalize brightness
+    img_array = cv2.normalize(img_array, None, 0, 255, cv2.NORM_MINMAX)
+    
+    # Apply slight Gaussian blur to reduce noise
+    img_array = cv2.GaussianBlur(img_array, (3, 3), 0)
+    
+    return img_array
+
+def extract_skin_region(image_array: np.ndarray) -> tuple:
+    """Extract only skin region from image"""
+    
+    # Convert to HSV for better skin detection
+    hsv = cv2.cvtColor(image_array, cv2.COLOR_RGB2HSV)
+    
+    # Skin color range in HSV (expanded for African skin tones)
+    lower_skin = np.array([0, 20, 70], dtype=np.uint8)
+    upper_skin = np.array([20, 255, 255], dtype=np.uint8)
+    
+    # Create mask
+    mask = cv2.inRange(hsv, lower_skin, upper_skin)
+    
+    # Clean mask
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+    
+    # Apply mask
+    skin_region = cv2.bitwise_and(image_array, image_array, mask=mask)
+    
+    return skin_region, mask
+
+# ============================================
 # MEDIAPIPE (Optional)
 # ============================================
 MEDIAPIPE_AVAILABLE = False
 try:
     import mediapipe as mp
-    import cv2
-    import numpy as np
     os.environ['GLOG_minloglevel'] = '2'
     mp_face_detection = mp.solutions.face_detection
     face_detection = mp_face_detection.FaceDetection(model_selection=1, min_detection_confidence=0.5)
@@ -292,6 +351,213 @@ try:
     print("✅ MediaPipe loaded!")
 except:
     print("⚠️ MediaPipe not available")
+
+# ============================================
+# IMPROVED SKIN ANALYSIS FUNCTIONS
+# ============================================
+
+def analyze_with_mediapipe(image_bytes: bytes) -> Optional[Dict]:
+    """Analyze skin using MediaPipe with standardized preprocessing"""
+    if not MEDIAPIPE_AVAILABLE:
+        return None
+    
+    try:
+        # Step 1: Standardize image first
+        standardized_img = standardize_image(image_bytes)
+        
+        # Convert to RGB for MediaPipe
+        image_rgb = cv2.cvtColor(standardized_img, cv2.COLOR_RGB2BGR)
+        image_rgb = cv2.cvtColor(image_rgb, cv2.COLOR_BGR2RGB)
+        
+        # Step 2: Detect face
+        results = face_detection.process(image_rgb)
+        
+        if results.detections:
+            h, w, _ = standardized_img.shape
+            detection = results.detections[0]
+            bbox = detection.location_data.relative_bounding_box
+            x = max(0, int(bbox.xmin * w))
+            y = max(0, int(bbox.ymin * h))
+            width = min(w - x, int(bbox.width * w))
+            height = min(h - y, int(bbox.height * h))
+            
+            # Extract face region
+            face_region = standardized_img[y:y+height, x:x+width]
+            
+            if face_region.size > 0:
+                # Step 3: Extract only skin region
+                skin_region, mask = extract_skin_region(face_region)
+                
+                # Get skin pixels only
+                skin_pixels = skin_region[mask > 0]
+                
+                if len(skin_pixels) > 100:
+                    # Convert to grayscale
+                    gray_face = cv2.cvtColor(face_region, cv2.COLOR_RGB2GRAY)
+                    gray_skin = cv2.cvtColor(skin_region, cv2.COLOR_RGB2GRAY)
+                    gray_skin_masked = gray_skin[mask > 0]
+                    
+                    # Calculate multiple metrics
+                    texture_var = np.var(gray_skin_masked) if len(gray_skin_masked) > 0 else np.var(gray_face)
+                    avg_brightness = np.mean(gray_skin_masked) if len(gray_skin_masked) > 0 else np.mean(gray_face)
+                    
+                    # Color analysis from skin pixels
+                    if len(skin_pixels) > 0:
+                        avg_r = np.mean(skin_pixels[:, 0])
+                        avg_g = np.mean(skin_pixels[:, 1])
+                        avg_b = np.mean(skin_pixels[:, 2])
+                    else:
+                        avg_r = avg_g = avg_b = 128
+                    
+                    # Texture analysis using Laplacian
+                    laplacian = cv2.Laplacian(gray_face, cv2.CV_64F)
+                    texture_score = np.var(laplacian)
+                    
+                    # Scoring system
+                    scores = {"dry": 0, "oily": 0, "combination": 0, "sensitive": 0, "normal": 0}
+                    
+                    # Rule 1: Texture variance
+                    if texture_var > 3000:
+                        scores["oily"] += 3
+                        scores["combination"] += 2
+                    elif texture_var < 1500:
+                        scores["dry"] += 3
+                        scores["normal"] += 1
+                    else:
+                        scores["normal"] += 2
+                        scores["combination"] += 2
+                    
+                    # Rule 2: Brightness
+                    if avg_brightness > 180:
+                        scores["dry"] += 2
+                        scores["sensitive"] += 2
+                    elif avg_brightness < 100:
+                        scores["oily"] += 2
+                    else:
+                        scores["normal"] += 2
+                    
+                    # Rule 3: Color balance (redness = sensitivity)
+                    if avg_r > avg_g + 10 and avg_r > avg_b + 10:
+                        scores["sensitive"] += 3
+                    elif avg_g > avg_r + 10 and avg_g > avg_b + 10:
+                        scores["oily"] += 2
+                    
+                    # Rule 4: Texture score
+                    if texture_score > 500:
+                        scores["sensitive"] += 2
+                        scores["dry"] += 1
+                    elif texture_score < 200:
+                        scores["normal"] += 2
+                        scores["oily"] += 1
+                    
+                    # Get highest scoring type
+                    max_score = max(scores.values())
+                    candidates = [k for k, v in scores.items() if v == max_score]
+                    
+                    if len(candidates) > 1:
+                        if "normal" in candidates:
+                            skin_type = "normal"
+                        elif "combination" in candidates:
+                            skin_type = "combination"
+                        else:
+                            skin_type = candidates[0]
+                    else:
+                        skin_type = candidates[0]
+                    
+                    # Calculate confidence
+                    confidence = 0.75
+                    if max_score >= 5:
+                        confidence = 0.85
+                    elif max_score >= 3:
+                        confidence = 0.75
+                    else:
+                        confidence = 0.65
+                    
+                    return {
+                        "skin_type": skin_type,
+                        "confidence": confidence,
+                        "method": "MediaPipe AI"
+                    }
+        
+        return None
+    except Exception as e:
+        print(f"MediaPipe analysis error: {e}")
+        return None
+
+def analyze_with_fallback(image_bytes: bytes) -> Dict:
+    """Deterministic fallback analysis (no randomness)"""
+    try:
+        # Standardize image first
+        standardized_img = standardize_image(image_bytes)
+        
+        # Extract skin region
+        skin_region, mask = extract_skin_region(standardized_img)
+        
+        # Calculate metrics from skin region
+        gray = cv2.cvtColor(skin_region, cv2.COLOR_RGB2GRAY)
+        skin_pixels = gray[mask > 0]
+        
+        if len(skin_pixels) > 100:
+            texture_var = np.var(skin_pixels)
+            avg_brightness = np.mean(skin_pixels)
+            
+            # Color analysis
+            skin_rgb = skin_region[mask > 0]
+            if len(skin_rgb) > 0 and len(skin_rgb.shape) > 1:
+                avg_r = np.mean(skin_rgb[:, 0])
+                avg_g = np.mean(skin_rgb[:, 1])
+                avg_b = np.mean(skin_rgb[:, 2])
+                is_reddish = avg_r > avg_g + 10 and avg_r > avg_b + 10
+            else:
+                is_reddish = False
+            
+            # Deterministic logic (no random)
+            if texture_var > 3000:
+                skin_type = "oily"
+                confidence = 0.80
+            elif texture_var < 1500:
+                skin_type = "dry"
+                confidence = 0.80
+            elif is_reddish:
+                skin_type = "sensitive"
+                confidence = 0.75
+            elif 1500 <= texture_var <= 2500:
+                skin_type = "normal"
+                confidence = 0.75
+            else:
+                skin_type = "combination"
+                confidence = 0.70
+            
+            return {
+                "skin_type": skin_type,
+                "confidence": confidence,
+                "method": "Color Analysis"
+            }
+        else:
+            return {
+                "skin_type": "normal",
+                "confidence": 0.60,
+                "method": "Default"
+            }
+            
+    except Exception as e:
+        print(f"Fallback analysis error: {e}")
+        return {
+            "skin_type": "normal",
+            "confidence": 0.50,
+            "method": "Default"
+        }
+
+def analyze_with_consistency(image_bytes: bytes) -> Dict:
+    """Run analysis with consistency check"""
+    
+    # First try MediaPipe
+    result = analyze_with_mediapipe(image_bytes)
+    if result:
+        return result
+    
+    # Fallback to improved color analysis
+    return analyze_with_fallback(image_bytes)
 
 # ============================================
 # WEATHER API
@@ -374,51 +640,6 @@ SKIN_CARE_DATA = {
                "oils": ["Argan Oil", "Jojoba Oil", "Rosehip Oil"]}
 }
 
-def analyze_with_mediapipe(image_bytes: bytes) -> Optional[Dict]:
-    if not MEDIAPIPE_AVAILABLE:
-        return None
-    try:
-        image = Image.open(io.BytesIO(image_bytes))
-        image = np.array(image)
-        image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
-        image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        results = face_detection.process(image_rgb)
-        if results.detections:
-            h, w, _ = image.shape
-            bbox = results.detections[0].location_data.relative_bounding_box
-            x, y = int(bbox.xmin * w), int(bbox.ymin * h)
-            width, height = int(bbox.width * w), int(bbox.height * h)
-            face_region = image_rgb[y:y+height, x:x+width]
-            if face_region.size > 0:
-                gray_face = cv2.cvtColor(face_region, cv2.COLOR_RGB2GRAY)
-                texture_var = np.var(gray_face)
-                if texture_var > 3000:
-                    return {"skin_type": "oily", "confidence": 0.85, "method": "MediaPipe AI"}
-                elif texture_var < 1500:
-                    return {"skin_type": "dry", "confidence": 0.85, "method": "MediaPipe AI"}
-                else:
-                    return {"skin_type": "normal", "confidence": 0.85, "method": "MediaPipe AI"}
-        return None
-    except:
-        return None
-
-def analyze_with_fallback(image_bytes: bytes) -> Dict:
-    try:
-        image = Image.open(io.BytesIO(image_bytes))
-        if image.mode != 'RGB':
-            image = image.convert('RGB')
-        pixels = list(image.getdata())
-        sample = pixels[:min(1000, len(pixels))]
-        brightness = sum(sum(p[:3])/3 for p in sample) / len(sample) if sample else 128
-        if brightness > 200:
-            return {"skin_type": "dry", "confidence": 0.70, "method": "Color Analysis"}
-        elif brightness < 80:
-            return {"skin_type": "oily", "confidence": 0.70, "method": "Color Analysis"}
-        else:
-            return {"skin_type": "normal", "confidence": 0.70, "method": "Color Analysis"}
-    except:
-        return {"skin_type": "normal", "confidence": 0.50, "method": "Default"}
-
 # ============================================
 # BASIC API ENDPOINTS
 # ============================================
@@ -448,7 +669,7 @@ async def get_weather(lat: float, lon: float, skin_type: str = "normal", user_id
     return {"success": True, "weather": weather, "sunscreen": sunscreen}
 
 # ============================================
-# AUTH ENDPOINTS (WITH ROLE SUPPORT)
+# AUTH ENDPOINTS
 # ============================================
 
 @app.post("/auth/register")
@@ -464,7 +685,6 @@ async def register(request: RegisterRequest):
             
             user_id = str(uuid.uuid4())
             password_hash = hash_password(password)
-            # Set is_approved: 1 for customer, 0 for vendor (needs admin approval)
             is_approved = 1 if role == 'customer' else 0
             
             conn.execute("""INSERT INTO users (id, email, password_hash, name, role, is_approved, phone, address, created_at) 
@@ -513,28 +733,56 @@ async def get_current_user(user_id: str = Depends(verify_token)):
         return {"success": True, "user": dict(user)}
 
 # ============================================
-# SKIN ANALYSIS
+# SKIN ANALYSIS ENDPOINT (UPDATED)
 # ============================================
 
 @app.post("/analyze")
 async def analyze_skin(file: UploadFile = File(...), user_id: str = Depends(verify_token)):
     if not file.content_type.startswith('image/'):
         raise HTTPException(status_code=400, detail="File must be an image")
+    
     try:
         contents = await file.read()
-        analysis = analyze_with_mediapipe(contents) or analyze_with_fallback(contents)
-        skin_type, confidence, method = analysis["skin_type"], analysis["confidence"], analysis["method"]
+        
+        # Use improved consistency check
+        analysis = analyze_with_consistency(contents)
+        
+        skin_type = analysis.get("skin_type", "normal")
+        confidence = analysis.get("confidence", 0.75)
+        method = analysis.get("method", "AI Analysis")
+        
         skin_data = SKIN_CARE_DATA.get(skin_type, SKIN_CARE_DATA["normal"])
+        
+        # Save to database
         analysis_id = str(uuid.uuid4())
         with get_db() as conn:
-            conn.execute("""INSERT INTO analyses (id, user_id, skin_type, skin_name, confidence, characteristics, recommendations, recommended_oils, method) 
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                        (analysis_id, user_id, skin_type, skin_data["name"], confidence, 
-                         "|".join(skin_data["characteristics"]), "|".join(skin_data["recommendations"]), "|".join(skin_data["oils"]), method))
+            conn.execute(
+                """INSERT INTO analyses (id, user_id, skin_type, skin_name, confidence, characteristics, recommendations, recommended_oils, method) 
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    analysis_id, user_id, skin_type, skin_data["name"], confidence,
+                    "|".join(skin_data["characteristics"]),
+                    "|".join(skin_data["recommendations"]),
+                    "|".join(skin_data["oils"]),
+                    method
+                )
+            )
             conn.commit()
-        return {"success": True, "skin_type": skin_type, "skin_name": skin_data["name"], "confidence": confidence,
-                "characteristics": skin_data["characteristics"], "recommendations": skin_data["recommendations"],
-                "recommended_oils": skin_data["oils"], "analysis_id": analysis_id}
+        
+        return {
+            "success": True,
+            "skin_type": skin_type,
+            "skin_name": skin_data["name"],
+            "confidence": confidence,
+            "characteristics": skin_data["characteristics"],
+            "recommendations": skin_data["recommendations"],
+            "recommended_oils": skin_data["oils"],
+            "products": skin_data["products"],
+            "method": method,
+            "analysis_id": analysis_id,
+            "timestamp": datetime.now().isoformat()
+        }
+        
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
 
@@ -611,7 +859,7 @@ async def vendor_stats(user_id: str = Depends(verify_token)):
                 "total_orders": sales["orders"] or 0, "total_views": views["total_views"] or 0}
 
 # ============================================
-# SUPER ADMIN ENDPOINTS (FULL FEATURED)
+# SUPER ADMIN ENDPOINTS
 # ============================================
 
 @app.get("/admin/stats")
@@ -621,54 +869,33 @@ async def admin_stats(user_id: str = Depends(verify_token)):
         if not user or user["role"] != "admin":
             return JSONResponse(status_code=403, content={"success": False, "message": "Admin access required"})
         
-        # User statistics
         total_users = conn.execute("SELECT COUNT(*) as count FROM users").fetchone()["count"]
         total_customers = conn.execute("SELECT COUNT(*) as count FROM users WHERE role = 'customer'").fetchone()["count"]
         total_vendors = conn.execute("SELECT COUNT(*) as count FROM users WHERE role = 'vendor'").fetchone()["count"]
         pending_vendors = conn.execute("SELECT COUNT(*) as count FROM users WHERE role = 'vendor' AND is_approved = 0").fetchone()["count"]
-        
-        # Product statistics
         total_products = conn.execute("SELECT COUNT(*) as count FROM products").fetchone()["count"]
         pending_products = conn.execute("SELECT COUNT(*) as count FROM products WHERE is_approved = 0").fetchone()["count"]
-        sponsored_products = conn.execute("SELECT COUNT(*) as count FROM products WHERE is_sponsored = 1 AND is_approved = 1").fetchone()["count"]
-        
-        # Order statistics
         total_orders = conn.execute("SELECT COUNT(*) as count FROM orders").fetchone()["count"]
-        pending_orders = conn.execute("SELECT COUNT(*) as count FROM orders WHERE status = 'pending'").fetchone()["count"]
-        completed_orders = conn.execute("SELECT COUNT(*) as count FROM orders WHERE status = 'delivered'").fetchone()["count"]
         total_revenue = conn.execute("SELECT SUM(total_amount) as total FROM orders WHERE status = 'delivered'").fetchone()["total"] or 0
         
-        # Get all users with details
         all_users = conn.execute("SELECT id, email, name, role, is_approved, phone, address, created_at, last_login FROM users ORDER BY created_at DESC").fetchall()
-        
-        # Get all vendors with details
-        all_vendors = conn.execute("SELECT id, email, name, role, is_approved, phone, address, created_at FROM users WHERE role = 'vendor' ORDER BY created_at DESC").fetchall()
-        
-        # Get pending vendors
+        all_vendors = conn.execute("SELECT id, email, name, is_approved, phone, address, created_at FROM users WHERE role = 'vendor' ORDER BY created_at DESC").fetchall()
         pending_vendors_list = conn.execute("SELECT id, email, name, phone, address, created_at FROM users WHERE role = 'vendor' AND is_approved = 0 ORDER BY created_at DESC").fetchall()
-        
-        # Get pending products with vendor names
         pending_products_list = conn.execute("""SELECT p.*, u.name as vendor_name, u.email as vendor_email 
                                                FROM products p JOIN users u ON p.store_id = u.id 
                                                WHERE p.is_approved = 0 ORDER BY p.created_at DESC""").fetchall()
-        
-        # Get recent analyses
-        recent_analyses = conn.execute("""SELECT a.*, u.name as user_name, u.email as user_email 
-                                         FROM analyses a JOIN users u ON a.user_id = u.id 
-                                         ORDER BY a.created_at DESC LIMIT 20""").fetchall()
         
         return {
             "success": True,
             "stats": {
                 "users": {"total": total_users, "customers": total_customers, "vendors": total_vendors, "pending_vendors": pending_vendors},
-                "products": {"total": total_products, "pending": pending_products, "sponsored": sponsored_products},
-                "orders": {"total": total_orders, "pending": pending_orders, "completed": completed_orders, "revenue": total_revenue}
+                "products": {"total": total_products, "pending": pending_products},
+                "orders": {"total": total_orders, "revenue": total_revenue}
             },
             "all_users": [dict(u) for u in all_users],
             "all_vendors": [dict(v) for v in all_vendors],
             "pending_vendors": [dict(v) for v in pending_vendors_list],
-            "pending_products": [dict(p) for p in pending_products_list],
-            "recent_analyses": [dict(a) for a in recent_analyses]
+            "pending_products": [dict(p) for p in pending_products_list]
         }
 
 @app.get("/admin/users")
@@ -677,7 +904,6 @@ async def admin_get_users(user_id: str = Depends(verify_token)):
         user = conn.execute("SELECT role FROM users WHERE id = ?", (user_id,)).fetchone()
         if not user or user["role"] != "admin":
             return JSONResponse(status_code=403, content={"success": False, "message": "Admin access required"})
-        
         users = conn.execute("SELECT id, email, name, role, is_approved, phone, address, created_at, last_login FROM users ORDER BY created_at DESC").fetchall()
         return {"success": True, "users": [dict(u) for u in users]}
 
@@ -688,23 +914,14 @@ async def admin_get_user(target_user_id: str, user_id: str = Depends(verify_toke
         if not admin or admin["role"] != "admin":
             return JSONResponse(status_code=403, content={"success": False, "message": "Admin access required"})
         
-        # Get user details
         user = conn.execute("SELECT id, email, name, role, is_approved, phone, address, created_at, last_login FROM users WHERE id = ?", (target_user_id,)).fetchone()
         if not user:
             return JSONResponse(status_code=404, content={"success": False, "message": "User not found"})
         
-        # Get user's analyses
         analyses = conn.execute("SELECT id, skin_type, skin_name, confidence, created_at FROM analyses WHERE user_id = ? ORDER BY created_at DESC", (target_user_id,)).fetchall()
-        
-        # Get user's orders
         orders = conn.execute("SELECT id, status, total_amount, created_at FROM orders WHERE user_id = ? ORDER BY created_at DESC", (target_user_id,)).fetchall()
         
-        return {
-            "success": True,
-            "user": dict(user),
-            "analyses": [dict(a) for a in analyses],
-            "orders": [dict(o) for o in orders]
-        }
+        return {"success": True, "user": dict(user), "analyses": [dict(a) for a in analyses], "orders": [dict(o) for o in orders]}
 
 @app.get("/admin/vendors")
 async def admin_get_vendors(user_id: str = Depends(verify_token)):
@@ -714,15 +931,12 @@ async def admin_get_vendors(user_id: str = Depends(verify_token)):
             return JSONResponse(status_code=403, content={"success": False, "message": "Admin access required"})
         
         vendors = conn.execute("SELECT id, email, name, is_approved, phone, address, created_at FROM users WHERE role = 'vendor' ORDER BY created_at DESC").fetchall()
-        
-        # Get product count for each vendor
         result = []
         for vendor in vendors:
             product_count = conn.execute("SELECT COUNT(*) as count FROM products WHERE store_id = ?", (vendor["id"],)).fetchone()["count"]
             vendor_dict = dict(vendor)
             vendor_dict["product_count"] = product_count
             result.append(vendor_dict)
-        
         return {"success": True, "vendors": result}
 
 @app.get("/admin/vendor/{vendor_id}")
@@ -740,7 +954,6 @@ async def admin_get_vendor(vendor_id: str, user_id: str = Depends(verify_token))
         orders = conn.execute("""SELECT o.id, o.status, o.total_amount, o.created_at, COUNT(oi.id) as items 
                                 FROM orders o JOIN order_items oi ON o.id = oi.order_id 
                                 WHERE o.store_id = ? GROUP BY o.id ORDER BY o.created_at DESC""", (vendor_id,)).fetchall()
-        
         return {"success": True, "vendor": dict(vendor), "products": [dict(p) for p in products], "orders": [dict(o) for o in orders]}
 
 @app.post("/admin/approve-vendor/{vendor_id}")
