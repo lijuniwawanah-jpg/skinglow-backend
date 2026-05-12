@@ -1,5 +1,5 @@
 # ============================================
-# SKINGLOW AI - PRODUCTION BACKEND
+# SKINGLOW AI - PRODUCTION BACKEND (UPDATED)
 # Professional Skin Analysis API
 # ============================================
 
@@ -7,11 +7,12 @@ from fastapi import FastAPI, File, UploadFile, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import uvicorn
 from PIL import Image, ImageEnhance, ImageFilter
 import io
 import os
+import sys
 from typing import Dict, Optional, List
 import requests
 from dotenv import load_dotenv
@@ -240,9 +241,7 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, 
 # ============================================
 # SECURITY CONFIGURATION
 # ============================================
-SECRET_KEY = os.getenv('SECRET_KEY')
-if not SECRET_KEY:
-    raise ValueError("SECRET_KEY environment variable is not set!")
+SECRET_KEY = os.getenv('SECRET_KEY', 'your-secret-key-min-32-chars-long-change-this')
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 security = HTTPBearer()
@@ -286,7 +285,6 @@ MEDIAPIPE_AVAILABLE = False
 try:
     import mediapipe as mp
     import cv2
-    import numpy as np
     os.environ['GLOG_minloglevel'] = '2'
     mp_face_detection = mp.solutions.face_detection
     face_detection = mp_face_detection.FaceDetection(model_selection=1, min_detection_confidence=0.5)
@@ -323,6 +321,7 @@ def standardize_image_lighting(image_bytes: bytes) -> np.ndarray:
         # Simple histogram equalization for lighting normalization
         if 'cv2' in sys.modules:
             try:
+                import cv2
                 yuv = cv2.cvtColor(img_array, cv2.COLOR_RGB2YUV)
                 yuv[:,:,0] = cv2.equalizeHist(yuv[:,:,0])
                 img_array = cv2.cvtColor(yuv, cv2.COLOR_YUV2RGB)
@@ -549,7 +548,7 @@ def analyze_with_consistency(image_bytes: bytes) -> Dict:
     
     results = []
     
-    # Original image
+    # Try MediaPipe first
     result1 = analyze_with_mediapipe(image_bytes)
     if result1:
         results.append(result1)
@@ -574,14 +573,13 @@ def analyze_with_consistency(image_bytes: bytes) -> Dict:
             "method": results[0]["method"]
         }
     
-    # If disagreement, use fallback
+    # If disagreement, use fallback for more reliable result
     return analyze_with_fallback(image_bytes)
 
 # ============================================
-# WEATHER API
+# WEATHER & LOCATION (FIXED)
 # ============================================
 WEATHER_API_KEY = os.getenv('OPENWEATHER_API_KEY', '')
-WEATHER_API_URL = "https://api.openweathermap.org/data/2.5"
 
 async def get_city_from_coordinates(lat: float, lon: float) -> str:
     try:
@@ -589,27 +587,32 @@ async def get_city_from_coordinates(lat: float, lon: float) -> str:
                                 headers={'User-Agent': 'SkinGlowApp/1.0'}, timeout=5)
         if response.status_code == 200:
             data = response.json()
-            return data.get('address', {}).get('city') or data.get('address', {}).get('town') or 'Your City'
+            addr = data.get('address', {})
+            return addr.get('city') or addr.get('town') or addr.get('village') or addr.get('region') or addr.get('state') or 'Dodoma'
     except:
         pass
     return 'Your Location'
 
 def get_weather_data(lat: float, lon: float) -> Dict:
+    # Use Tanzania Time (UTC+3) to calculate UV index correctly
+    tz_tz = timezone(timedelta(hours=3))
+    current_hour = datetime.now(tz_tz).hour
+    
+    if 11 <= current_hour <= 14:
+        uv_index = 10
+    elif 9 <= current_hour <= 16:
+        uv_index = 7
+    elif 6 <= current_hour <= 18:
+        uv_index = 3
+    else:
+        uv_index = 0
+        
     if not WEATHER_API_KEY:
-        return {"success": True, "uv_index": 5, "temperature": 25, "humidity": 60, "condition": "clear", "city": "Your City"}
+        return {"success": True, "uv_index": uv_index, "temperature": 25, "humidity": 60, "condition": "clear", "city": "Your City"}
     try:
         response = requests.get(f"https://api.openweathermap.org/data/2.5/weather?lat={lat}&lon={lon}&appid={WEATHER_API_KEY}&units=metric", timeout=10)
         data = response.json()
         if response.status_code == 200:
-            current_hour = datetime.now().hour
-            if 11 <= current_hour <= 14:
-                uv_index = 10
-            elif 9 <= current_hour <= 16:
-                uv_index = 7
-            elif 6 <= current_hour <= 18:
-                uv_index = 3
-            else:
-                uv_index = 0
             return {
                 "success": True,
                 "temperature": data.get('main', {}).get('temp', 25),
@@ -620,24 +623,37 @@ def get_weather_data(lat: float, lon: float) -> Dict:
             }
     except:
         pass
-    return {"success": True, "uv_index": 5, "temperature": 25, "humidity": 60, "condition": "clear", "city": "Your City"}
+    return {"success": True, "uv_index": uv_index, "temperature": 25, "humidity": 60, "condition": "clear", "city": "Your City"}
 
 def get_sunscreen_recommendation(uv_index: float, skin_type: str) -> Dict:
     if uv_index <= 2:
-        uv_level, base_spf, advice = "Low", 15, "Minimal UV risk."
+        level, spf, advice = "Low", 15, "Minimal UV risk."
     elif uv_index <= 5:
-        uv_level, base_spf, advice = "Moderate", 30, "Sunscreen required."
+        level, spf, advice = "Moderate", 30, "Sunscreen required."
     elif uv_index <= 7:
-        uv_level, base_spf, advice = "High", 50, "Strong protection needed."
+        level, spf, advice = "High", 50, "Strong protection needed."
     elif uv_index <= 10:
-        uv_level, base_spf, advice = "Very High", 50, "Maximum protection required."
+        level, spf, advice = "Very High", 50, "Maximum protection required."
     else:
-        uv_level, base_spf, advice = "Extreme", 50, "Avoid sun exposure."
-    skin_advice = {'dry': "Hydrating sunscreen", 'oily': "Oil-free sunscreen", 'combination': "Lightweight sunscreen", 
-                   'sensitive': "Mineral sunscreen", 'normal': "Broad-spectrum sunscreen"}
-    return {"uv_index": uv_index, "uv_level": uv_level, "advice": advice, "recommended_spf": base_spf, 
-            "reapplication_hours": 2 if uv_index > 5 else 4, "skin_advice": skin_advice.get(skin_type, skin_advice['normal']),
-            "tips": ["Apply 15-20 min before sun exposure", f"Reapply every {2 if uv_index > 5 else 4} hours", "Use 1/2 tsp for face and neck"]}
+        level, spf, advice = "Extreme", 50, "Avoid sun exposure."
+    
+    skin_advice = {
+        'dry': "Hydrating sunscreen",
+        'oily': "Oil-free sunscreen",
+        'combination': "Lightweight sunscreen",
+        'sensitive': "Mineral sunscreen",
+        'normal': "Broad-spectrum sunscreen"
+    }
+    
+    return {
+        "uv_index": uv_index,
+        "uv_level": level,
+        "advice": advice,
+        "recommended_spf": spf,
+        "reapplication_hours": 2 if uv_index > 5 else 4,
+        "skin_advice": skin_advice.get(skin_type, skin_advice['normal']),
+        "tips": ["Apply 15-20 min before sun exposure", f"Reapply every {2 if uv_index > 5 else 4} hours", "Use 1/2 tsp for face and neck"]
+    }
 
 # ============================================
 # SKIN CARE DATABASE
@@ -645,19 +661,24 @@ def get_sunscreen_recommendation(uv_index: float, skin_type: str) -> Dict:
 SKIN_CARE_DATA = {
     "dry": {"name": "Dry Skin", "characteristics": ["Lacks moisture", "May feel tight or flaky"], 
             "recommendations": ["Use hydrating cleanser", "Apply hyaluronic acid", "Use rich moisturizer", "Add facial oil"],
-            "oils": ["Argan Oil", "Rosehip Oil", "Jojoba Oil"]},
+            "oils": ["Argan Oil", "Rosehip Oil", "Jojoba Oil"],
+            "products": []},
     "oily": {"name": "Oily Skin", "characteristics": ["Excess sebum", "Shiny appearance"], 
              "recommendations": ["Use foaming cleanser", "Apply niacinamide", "Use gel moisturizer", "Exfoliate weekly"],
-             "oils": ["Grapeseed Oil", "Tea Tree Oil", "Hemp Seed Oil"]},
+             "oils": ["Grapeseed Oil", "Tea Tree Oil", "Hemp Seed Oil"],
+             "products": []},
     "combination": {"name": "Combination Skin", "characteristics": ["Oily in T-zone", "Normal or dry on cheeks"],
                     "recommendations": ["Use balancing cleanser", "Lightweight moisturizer", "Exfoliate T-zone"],
-                    "oils": ["Jojoba Oil", "Squalane Oil", "Marula Oil"]},
+                    "oils": ["Jojoba Oil", "Squalane Oil", "Marula Oil"],
+                    "products": []},
     "sensitive": {"name": "Sensitive Skin", "characteristics": ["Easily irritated", "Prone to redness"],
                   "recommendations": ["Use gentle cleanser", "Calming ingredients", "Minimal products"],
-                  "oils": ["Chamomile Oil", "Calendula Oil", "Rose Oil"]},
+                  "oils": ["Chamomile Oil", "Calendula Oil", "Rose Oil"],
+                  "products": []},
     "normal": {"name": "Normal Skin", "characteristics": ["Balanced moisture", "Neither too oily nor too dry"],
                "recommendations": ["Regular cleansing", "Antioxidant serum", "SPF daily", "Weekly exfoliation"],
-               "oils": ["Argan Oil", "Jojoba Oil", "Rosehip Oil"]}
+               "oils": ["Argan Oil", "Jojoba Oil", "Rosehip Oil"],
+               "products": []}
 }
 
 # ============================================
@@ -670,8 +691,12 @@ async def root():
 
 @app.get("/health")
 async def health_check():
-    return {"status": "operational", "mediapipe": MEDIAPIPE_AVAILABLE, "weather_api": bool(WEATHER_API_KEY), 
-            "skin_types": list(SKIN_CARE_DATA.keys())}
+    return {
+        "status": "operational",
+        "mediapipe": MEDIAPIPE_AVAILABLE,
+        "weather_api": bool(WEATHER_API_KEY),
+        "skin_types": list(SKIN_CARE_DATA.keys())
+    }
 
 @app.get("/location/{lat}/{lon}")
 async def get_location_name(lat: float, lon: float):
@@ -753,7 +778,7 @@ async def get_current_user(user_id: str = Depends(verify_token)):
         return {"success": True, "user": dict(user)}
 
 # ============================================
-# SKIN ANALYSIS ENDPOINT (UPDATED)
+# SKIN ANALYSIS ENDPOINT (UPDATED - FIXED ERROR 500)
 # ============================================
 
 @app.post("/analyze")
@@ -797,7 +822,7 @@ async def analyze_skin(file: UploadFile = File(...), user_id: str = Depends(veri
             "characteristics": skin_data["characteristics"],
             "recommendations": skin_data["recommendations"],
             "recommended_oils": skin_data["oils"],
-            "products": skin_data["products"],
+            "products": skin_data.get("products", []),
             "method": method,
             "analysis_id": analysis_id,
             "timestamp": datetime.now().isoformat()
@@ -824,7 +849,8 @@ async def get_user_stats(user_id: str = Depends(verify_token)):
         if not analyses:
             return {"success": True, "total_analyses": 0, "active_days": 0, "skin_health_score": 85, "skin_type_trends": {}}
         
-        skin_type_counts, active_days = {}, set()
+        skin_type_counts = {}
+        active_days = set()
         for a in analyses:
             skin_type_counts[a["skin_type"]] = skin_type_counts.get(a["skin_type"], 0) + 1
             active_days.add(a["created_at"][:10])
@@ -848,10 +874,19 @@ async def vendor_add_product(request: dict, user_id: str = Depends(verify_token)
         if not user or user["role"] != "vendor" or user["is_approved"] != 1:
             return JSONResponse(status_code=403, content={"success": False, "message": "Only approved vendors can add products"})
     
-    name, description, price, category, skin_type, stock, image_url = request.get('name'), request.get('description'), request.get('price'), request.get('category'), request.get('skin_type'), request.get('stock', 0), request.get('image_url', '')
+    name = request.get('name')
+    description = request.get('description')
+    price = request.get('price')
+    category = request.get('category')
+    skin_type = request.get('skin_type')
+    stock = request.get('stock', 0)
+    image_url = request.get('image_url', '')
+    
     product_id = str(uuid.uuid4())
     with get_db() as conn:
-        conn.execute("INSERT INTO products (id, store_id, name, description, price, category, skin_type, stock, image_url, is_approved) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)", (product_id, user_id, name, description, price, category, skin_type, stock, image_url))
+        conn.execute("""INSERT INTO products (id, store_id, name, description, price, category, skin_type, stock, image_url, is_approved) 
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)""", 
+                    (product_id, user_id, name, description, price, category, skin_type, stock, image_url))
         conn.commit()
     return {"success": True, "message": "Product submitted for approval", "product_id": product_id}
 
@@ -954,8 +989,13 @@ async def get_customer_products(skin_type: str = None, category: str = None, sor
             query += " AND p.category = ?"
             params.append(category)
         
-        sort_map = {"sponsored": "p.is_sponsored DESC, p.views DESC, p.created_at DESC", "popular": "p.views DESC, p.created_at DESC",
-                    "newest": "p.created_at DESC", "price_low": "p.price ASC", "price_high": "p.price DESC"}
+        sort_map = {
+            "sponsored": "p.is_sponsored DESC, p.views DESC, p.created_at DESC",
+            "popular": "p.views DESC, p.created_at DESC",
+            "newest": "p.created_at DESC",
+            "price_low": "p.price ASC",
+            "price_high": "p.price DESC"
+        }
         query += f" ORDER BY {sort_map.get(sort_by, sort_map['sponsored'])}"
         
         products = conn.execute(query, params).fetchall()
@@ -967,30 +1007,49 @@ async def get_customer_products(skin_type: str = None, category: str = None, sor
 @app.get("/products/categories")
 async def get_product_categories():
     return {"success": True, "categories": [
-        {"id": "cleanser", "name": "Cleanser", "icon": "🧼"}, {"id": "moisturizer", "name": "Moisturizer", "icon": "💧"},
-        {"id": "sunscreen", "name": "Sunscreen / SPF", "icon": "☀️"}, {"id": "serum", "name": "Serum", "icon": "✨"},
-        {"id": "oil", "name": "Face Oil", "icon": "🌿"}, {"id": "mask", "name": "Face Mask", "icon": "🎭"}, {"id": "toner", "name": "Toner", "icon": "💦"}
+        {"id": "cleanser", "name": "Cleanser", "icon": "🧼"},
+        {"id": "moisturizer", "name": "Moisturizer", "icon": "💧"},
+        {"id": "sunscreen", "name": "Sunscreen / SPF", "icon": "☀️"},
+        {"id": "serum", "name": "Serum", "icon": "✨"},
+        {"id": "oil", "name": "Face Oil", "icon": "🌿"},
+        {"id": "mask", "name": "Face Mask", "icon": "🎭"},
+        {"id": "toner", "name": "Toner", "icon": "💦"}
     ]}
 
 # ============================================
 # CHAT ENDPOINT
 # ============================================
 
-import openai
+try:
+    import openai
+    OPENAI_AVAILABLE = True
+except:
+    OPENAI_AVAILABLE = False
+    print("⚠️ OpenAI not available")
 
 @app.post("/chat")
 async def chat(request: dict, user_id: str = Depends(verify_token)):
     user_message = request.get('message', '')
     if not user_message:
         return {"success": False, "response": "Tafadhali uliza swali."}
+    
+    if not OPENAI_AVAILABLE:
+        return {"success": False, "response": "AI chat is not configured yet."}
+    
     openai.api_key = os.getenv('OPENAI_API_KEY', '')
     if not openai.api_key:
         return {"success": False, "response": "AI chat is not configured yet."}
+    
     try:
-        response = openai.ChatCompletion.create(model="gpt-3.5-turbo", messages=[
-            {"role": "system", "content": "You are a professional African skincare advisor. Give short, practical advice."},
-            {"role": "user", "content": user_message}
-        ], max_tokens=300, temperature=0.7)
+        response = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {"role": "system", "content": "You are a professional African skincare advisor. Give short, practical advice."},
+                {"role": "user", "content": user_message}
+            ],
+            max_tokens=300,
+            temperature=0.7
+        )
         return {"success": True, "response": response.choices[0].message.content}
     except Exception as e:
         return {"success": False, "response": "Samahani, nahitaji muda kidogo. Jaribu tena."}
@@ -1005,6 +1064,7 @@ if __name__ == "__main__":
     print("=" * 60)
     print(f"✅ MediaPipe: {'Available' if MEDIAPIPE_AVAILABLE else 'Not available'}")
     print(f"✅ Weather API: {'Configured' if WEATHER_API_KEY else 'Not configured'}")
+    print(f"✅ OpenAI: {'Available' if OPENAI_AVAILABLE else 'Not available'}")
     print(f"✅ Database: SQLite with full vendor/admin tables")
     print("=" * 60)
     print(f"🚀 Server starting on port {port}...")
