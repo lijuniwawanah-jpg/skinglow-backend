@@ -3,7 +3,7 @@
 # Full Integration: Analysis, Marketplace, AI Chat (Bilingual) & Pan-African Weather
 # Optimized by Ashraf Hamis Athumani (Wawanah)
 # ============================================
-from app.database.postgres_db import hash_password, verify_password, get_db
+from database.postgres_db import hash_password, verify_password, get_db
 from fastapi import FastAPI, File, UploadFile, HTTPException, Depends, Request, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
