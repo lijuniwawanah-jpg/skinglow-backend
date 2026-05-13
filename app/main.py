@@ -4,7 +4,7 @@
 # Optimized by Ashraf Hamis Athumani (Wawanah)
 # ============================================
 
-from database.postgres_db import hash_password, verify_password
+from database.postgres_db import hash_password, verify_password, get_db
 from fastapi import FastAPI, File, UploadFile, HTTPException, Depends, Request, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
