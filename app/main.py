@@ -3,112 +3,7 @@
 # Full Integration: Analysis, Marketplace, AI Chat (Bilingual) & Pan-African Weather
 # Optimized by Ashraf Hamis Athumani (Wawanah)
 # ============================================
-# app/main.py - Mwanzo wa file
-import sys
-import os
 
-# Add parent directory to path to import database module
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from fastapi import FastAPI, File, UploadFile, HTTPException, Depends, Request
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, FileResponse
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from fastapi.staticfiles import StaticFiles
-from datetime import datetime, timedelta, timezone
-from contextlib import asynccontextmanager
-import uvicorn
-from PIL import Image, ImageEnhance
-import io
-import os
-import sys
-from typing import Dict, Optional, List, Any
-import requests
-from dotenv import load_dotenv
-import jwt
-import bcrypt
-from pydantic import BaseModel, EmailStr, Field
-import uuid
-import numpy as np
-from collections import Counter
-import logging
-import time
-from functools import wraps
-import re
-import asyncio
-
-# Load environment variables
-load_dotenv()
-
-# Import database
-from database import get_db, init_db, migrate_data
-
-# Setup logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
-
-# ============================================
-# LIFESPAN MANAGER
-# ============================================
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    # Startup
-    logger.info("🚀 Starting SkinGlow AI Server...")
-    await init_db()
-    await migrate_data()
-    yield
-    # Shutdown
-    logger.info("👋 Shutting down SkinGlow AI Server...")
-
-# ============================================
-# INITIALIZE FASTAPI
-# ============================================
-
-app = FastAPI(
-    title="SkinGlow AI Master Production",
-    description="Professional Skin Analysis and E-commerce API - Pan-African",
-    version="5.2.0",
-    lifespan=lifespan
-)
-
-# CORS Configuration
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# ... Rest of your code (auth endpoints, etc.) ...
-
-# ============================================
-# HEALTH CHECK
-# ============================================
-
-@app.get("/")
-async def root():
-    return {
-        "status": "healthy",
-        "app": "SkinGlow AI Master Production",
-        "version": "5.2.0",
-        "timestamp": datetime.now().isoformat()
-    }
-
-@app.get("/health")
-async def health_check():
-    return {
-        "status": "operational",
-        "version": "5.2.0",
-        "database": "PostgreSQL" if os.getenv('DATABASE_URL') else "SQLite",
-        "timestamp": datetime.now().isoformat()
-    }
-
-# ... Continue with your existing endpoints ...
 from fastapi import FastAPI, File, UploadFile, HTTPException, Depends, Request, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
@@ -128,7 +23,6 @@ import jwt
 import bcrypt
 from pydantic import BaseModel, EmailStr, Field
 import uuid
-import sqlite3
 import numpy as np
 from collections import Counter
 import logging
@@ -137,6 +31,12 @@ from functools import wraps
 import re
 import shutil
 from pathlib import Path
+
+# Add parent directory to path for database module
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# Import database module
+from database import get_db, init_db, migrate_data
 
 # Load environment variables
 load_dotenv()
@@ -156,300 +56,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ============================================
-# INITIALIZE FASTAPI
-# ============================================
-
-app = FastAPI(
-    title="SkinGlow AI Master Production",
-    description="Professional Skin Analysis and E-commerce API - Pan-African",
-    version="5.2.0"
-)
-
-# CORS Configuration for production
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=os.getenv('ALLOWED_ORIGINS', 'http://localhost:3000,http://localhost:8000,https://skinglow.com').split(','),
-    allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
-    allow_headers=["*"],
-    expose_headers=["*"]
-)
-
-# ============================================
-# DATABASE SETUP (SQLite with WAL mode)
-# ============================================
-
-DATABASE_FILE = "skinglow.db"
-
-def get_db():
-    conn = sqlite3.connect(DATABASE_FILE, timeout=30)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA synchronous=NORMAL")
-    return conn
-
-# --- Security Functions (Upgraded to Bcrypt) ---
-def hash_password(password: str) -> str:
-    """Hash password using bcrypt (Production Standard)"""
-    return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
-
-def verify_password(plain_password: str, hashed_password: str) -> bool:
-    """Verify password using bcrypt"""
-    try:
-        return bcrypt.checkpw(plain_password.encode('utf-8'), hashed_password.encode('utf-8'))
-    except:
-        return False
-
-def init_db():
-    """Initialize database with ALL production tables"""
-    with get_db() as conn:
-        # USERS TABLE
-        conn.execute('''
-            CREATE TABLE IF NOT EXISTS users (
-                id TEXT PRIMARY KEY,
-                email TEXT UNIQUE NOT NULL,
-                password_hash TEXT NOT NULL,
-                name TEXT,
-                role TEXT DEFAULT 'customer',
-                is_approved INTEGER DEFAULT 0,
-                phone TEXT,
-                address TEXT,
-                latitude REAL,
-                longitude REAL,
-                profile_image TEXT,
-                fcm_token TEXT,
-                email_verified INTEGER DEFAULT 0,
-                verification_token TEXT,
-                reset_token TEXT,
-                reset_token_expiry TIMESTAMP,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                last_login TIMESTAMP
-            )
-        ''')
-        
-        # ANALYSES TABLE
-        conn.execute('''
-            CREATE TABLE IF NOT EXISTS analyses (
-                id TEXT PRIMARY KEY,
-                user_id TEXT NOT NULL,
-                skin_type TEXT NOT NULL,
-                skin_name TEXT NOT NULL,
-                confidence REAL NOT NULL,
-                characteristics TEXT,
-                recommendations TEXT,
-                recommended_oils TEXT,
-                products TEXT,
-                method TEXT,
-                image_url TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-            )
-        ''')
-        
-        # STORES TABLE
-        conn.execute('''
-            CREATE TABLE IF NOT EXISTS stores (
-                id TEXT PRIMARY KEY,
-                owner_id TEXT NOT NULL,
-                name TEXT NOT NULL,
-                description TEXT,
-                address TEXT NOT NULL,
-                latitude REAL NOT NULL,
-                longitude REAL NOT NULL,
-                phone TEXT,
-                logo_url TEXT,
-                banner_url TEXT,
-                rating REAL DEFAULT 0,
-                total_reviews INTEGER DEFAULT 0,
-                is_active INTEGER DEFAULT 1,
-                is_verified INTEGER DEFAULT 0,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (owner_id) REFERENCES users(id)
-            )
-        ''')
-        
-        # PRODUCTS TABLE
-        conn.execute('''
-            CREATE TABLE IF NOT EXISTS products (
-                id TEXT PRIMARY KEY,
-                store_id TEXT NOT NULL,
-                name TEXT NOT NULL,
-                description TEXT,
-                price REAL NOT NULL,
-                compare_price REAL,
-                category TEXT,
-                skin_type TEXT,
-                images TEXT,
-                stock INTEGER DEFAULT 0,
-                rating REAL DEFAULT 0,
-                total_reviews INTEGER DEFAULT 0,
-                is_active INTEGER DEFAULT 1,
-                is_approved INTEGER DEFAULT 0,
-                is_sponsored INTEGER DEFAULT 0,
-                views INTEGER DEFAULT 0,
-                sales_count INTEGER DEFAULT 0,
-                tags TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (store_id) REFERENCES stores(id)
-            )
-        ''')
-        
-        # ORDERS TABLE
-        conn.execute('''
-            CREATE TABLE IF NOT EXISTS orders (
-                id TEXT PRIMARY KEY,
-                user_id TEXT NOT NULL,
-                store_id TEXT NOT NULL,
-                order_number TEXT UNIQUE NOT NULL,
-                status TEXT DEFAULT 'pending',
-                total_amount REAL NOT NULL,
-                subtotal REAL NOT NULL,
-                tax REAL DEFAULT 0,
-                shipping_cost REAL DEFAULT 0,
-                discount REAL DEFAULT 0,
-                payment_method TEXT,
-                payment_status TEXT DEFAULT 'pending',
-                delivery_address TEXT,
-                delivery_latitude REAL,
-                delivery_longitude REAL,
-                tracking_number TEXT,
-                notes TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (user_id) REFERENCES users(id),
-                FOREIGN KEY (store_id) REFERENCES stores(id)
-            )
-        ''')
-        
-        # ORDER ITEMS TABLE
-        conn.execute('''
-            CREATE TABLE IF NOT EXISTS order_items (
-                id TEXT PRIMARY KEY,
-                order_id TEXT NOT NULL,
-                product_id TEXT NOT NULL,
-                quantity INTEGER NOT NULL,
-                price REAL NOT NULL,
-                total REAL NOT NULL,
-                FOREIGN KEY (order_id) REFERENCES orders(id),
-                FOREIGN KEY (product_id) REFERENCES products(id)
-            )
-        ''')
-        
-        # REVIEWS TABLE
-        conn.execute('''
-            CREATE TABLE IF NOT EXISTS reviews (
-                id TEXT PRIMARY KEY,
-                user_id TEXT NOT NULL,
-                product_id TEXT NOT NULL,
-                rating INTEGER NOT NULL CHECK (rating >= 1 AND rating <= 5),
-                comment TEXT,
-                images TEXT,
-                is_verified_purchase INTEGER DEFAULT 0,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (user_id) REFERENCES users(id),
-                FOREIGN KEY (product_id) REFERENCES products(id),
-                UNIQUE(user_id, product_id)
-            )
-        ''')
-        
-        # CHAT HISTORY TABLE
-        conn.execute('''
-            CREATE TABLE IF NOT EXISTS chat_history (
-                id TEXT PRIMARY KEY,
-                user_id TEXT NOT NULL,
-                user_message TEXT NOT NULL,
-                assistant_response TEXT NOT NULL,
-                provider TEXT,
-                skin_context TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (user_id) REFERENCES users(id)
-            )
-        ''')
-        
-        # NOTIFICATIONS TABLE
-        conn.execute('''
-            CREATE TABLE IF NOT EXISTS notifications (
-                id TEXT PRIMARY KEY,
-                user_id TEXT NOT NULL,
-                title TEXT NOT NULL,
-                message TEXT NOT NULL,
-                type TEXT DEFAULT 'info',
-                is_read INTEGER DEFAULT 0,
-                data TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (user_id) REFERENCES users(id)
-            )
-        ''')
-        
-        # Add missing columns to users table
-        cursor = conn.execute("PRAGMA table_info(users)")
-        columns = [col[1] for col in cursor.fetchall()]
-        
-        missing_columns = {
-            'profile_image': 'TEXT',
-            'fcm_token': 'TEXT',
-            'email_verified': 'INTEGER DEFAULT 0',
-            'verification_token': 'TEXT',
-            'reset_token': 'TEXT',
-            'reset_token_expiry': 'TIMESTAMP',
-            'updated_at': 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP'
-        }
-        
-        for col_name, col_type in missing_columns.items():
-            if col_name not in columns:
-                conn.execute(f"ALTER TABLE users ADD COLUMN {col_name} {col_type}")
-                logger.info(f"Added column {col_name} to users table")
-        
-        # Create indexes for performance
-        indexes = [
-            "CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)",
-            "CREATE INDEX IF NOT EXISTS idx_users_role ON users(role)",
-            "CREATE INDEX IF NOT EXISTS idx_analyses_user_id ON analyses(user_id)",
-            "CREATE INDEX IF NOT EXISTS idx_analyses_created_at ON analyses(created_at DESC)",
-            "CREATE INDEX IF NOT EXISTS idx_products_store_id ON products(store_id)",
-            "CREATE INDEX IF NOT EXISTS idx_products_category ON products(category)",
-            "CREATE INDEX IF NOT EXISTS idx_products_skin_type ON products(skin_type)",
-            "CREATE INDEX IF NOT EXISTS idx_orders_user_id ON orders(user_id)",
-            "CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status)",
-            "CREATE INDEX IF NOT EXISTS idx_reviews_product_id ON reviews(product_id)",
-            "CREATE INDEX IF NOT EXISTS idx_chat_history_user_id ON chat_history(user_id)",
-            "CREATE INDEX IF NOT EXISTS idx_notifications_user_id ON notifications(user_id)"
-        ]
-        
-        for idx in indexes:
-            conn.execute(idx)
-        
-        # Create default admin user
-        admin_email = os.getenv('ADMIN_EMAIL', 'admin@skinglow.com')
-        admin_password = os.getenv('ADMIN_PASSWORD', 'Admin@123')
-        
-        existing_admin = conn.execute("SELECT id FROM users WHERE email = ?", (admin_email,)).fetchone()
-        
-        if not existing_admin:
-            admin_id = str(uuid.uuid4())
-            password_hash = hash_password(admin_password)
-            conn.execute(
-                """INSERT INTO users (id, email, password_hash, name, role, is_approved, email_verified, created_at) 
-                   VALUES (?, ?, ?, ?, 'admin', 1, 1, CURRENT_TIMESTAMP)""",
-                (admin_id, admin_email, password_hash, "Super Admin")
-            )
-            conn.commit()
-            logger.info(f"✅ Default admin user created: {admin_email}")
-        else:
-            logger.info("✅ Admin user already exists")
-        
-        conn.commit()
-        logger.info("✅ Database initialized successfully!")
-
-# Initialize database
-init_db()
-
-# ============================================
-# LIFESPAN MANAGER (For production)
+# LIFESPAN MANAGER
 # ============================================
 
 @asynccontextmanager
@@ -460,11 +67,19 @@ async def lifespan(app: FastAPI):
     logger.info(f"OpenAI: {'Configured' if OPENAI_API_KEY else 'Not configured'}")
     logger.info(f"Gemini: {'Configured' if GEMINI_API_KEY else 'Not configured'}")
     logger.info(f"Weather API: {'Configured' if WEATHER_API_KEY else 'Not configured'}")
+    
+    # Initialize database
+    await init_db()
+    await migrate_data()
+    
     yield
     # Shutdown
     logger.info("👋 Shutting down SkinGlow AI Server...")
 
-# Re-initialize app with lifespan
+# ============================================
+# INITIALIZE FASTAPI
+# ============================================
+
 app = FastAPI(
     title="SkinGlow AI Master Production",
     description="Professional Skin Analysis and E-commerce API - Pan-African",
@@ -472,13 +87,14 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# Re-add CORS
+# CORS Configuration for production
 app.add_middleware(
     CORSMiddleware,
     allow_origins=os.getenv('ALLOWED_ORIGINS', 'http://localhost:3000,http://localhost:8000,https://skinglow.com').split(','),
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
     allow_headers=["*"],
+    expose_headers=["*"]
 )
 
 # ============================================
@@ -544,8 +160,15 @@ def require_role(required_role: str):
     def decorator(func):
         @wraps(func)
         async def wrapper(*args, user_id: str = Depends(verify_token), **kwargs):
-            with get_db() as conn:
-                user = conn.execute("SELECT role FROM users WHERE id = ?", (user_id,)).fetchone()
+            async with get_db() as conn:
+                # For PostgreSQL
+                if hasattr(conn, 'fetchrow'):
+                    user = await conn.fetchrow("SELECT role FROM users WHERE id = $1", user_id)
+                else:
+                    # For SQLite fallback
+                    cursor = await conn.execute("SELECT role FROM users WHERE id = ?", (user_id,))
+                    user = await cursor.fetchone()
+                
                 if not user or user["role"] != required_role:
                     raise HTTPException(status_code=403, detail="Insufficient permissions")
             return await func(*args, user_id=user_id, **kwargs)
@@ -679,6 +302,7 @@ def detect_language(text: str) -> str:
 def get_off_topic_response(message: str) -> str:
     """Return short, natural response in the same language as the user message"""
     language = detect_language(message)
+    import random
     
     if language == "swahili":
         responses = [
@@ -697,7 +321,6 @@ def get_off_topic_response(message: str) -> str:
             "Sorry, I can only answer skincare-related questions. What's your skin concern?"
         ]
     
-    import random
     return random.choice(responses)
 
 def get_skincare_fallback_response(message: str) -> str:
@@ -832,7 +455,6 @@ class ChatService:
             import openai
             openai.api_key = OPENAI_API_KEY
             
-            # Flexible system prompt
             system_prompt = """You are a skincare expert. Answer questions about skincare, skin problems, products, and sun protection.
 
 You can respond at appropriate length to explain well. Give detailed answers with examples and recommendations.
@@ -1392,37 +1014,25 @@ SKIN_CARE_DATA = {
 UPLOAD_DIR = "uploads/profiles"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-# Create static directory for default avatar
 STATIC_DIR = "static"
 os.makedirs(STATIC_DIR, exist_ok=True)
 
 def create_default_avatar():
-    """Create default avatar image if not exists"""
     avatar_path = os.path.join(STATIC_DIR, "default-avatar.png")
     
     if not os.path.exists(avatar_path):
         try:
             from PIL import Image, ImageDraw
-            # Create a simple default avatar
             size = 200
             img = Image.new('RGB', (size, size), color='#6C63FF')
             draw = ImageDraw.Draw(img)
-            
-            # Draw circle for face
             draw.ellipse((40, 40, 160, 160), fill='white')
-            
-            # Draw eyes
             draw.ellipse((70, 90, 90, 110), fill='#6C63FF')
             draw.ellipse((110, 90, 130, 110), fill='#6C63FF')
-            
-            # Draw smile
             draw.arc((70, 120, 130, 150), start=0, end=180, fill='#6C63FF', width=5)
-            
             img.save(avatar_path)
             logger.info("✅ Created default avatar")
         except Exception as e:
-            # Simple fallback
-            logger.warning(f"Could not create fancy avatar: {e}")
             img = Image.new('RGB', (200, 200), color='#6C63FF')
             img.save(avatar_path)
             logger.info("✅ Created simple default avatar")
@@ -1430,54 +1040,57 @@ def create_default_avatar():
 create_default_avatar()
 
 # ============================================
-# PROFILE IMAGE ENDPOINTS (UPDATED FOR FLUTTER)
+# PROFILE IMAGE ENDPOINTS
 # ============================================
 
 @app.post("/users/profile/image")
 async def upload_profile_image(file: UploadFile = File(...), user_id: str = Depends(verify_token)):
-    """Upload profile image - optimized for Flutter"""
     if not file.content_type.startswith('image/'):
         raise HTTPException(status_code=400, detail="File must be an image")
     
     contents = await file.read()
     file_size = len(contents)
     
-    if file_size > 5 * 1024 * 1024:  # 5MB
+    if file_size > 5 * 1024 * 1024:
         raise HTTPException(status_code=400, detail="File too large. Max 5MB")
     
     file_extension = os.path.splitext(file.filename)[1].lower()
     if file_extension not in ['.jpg', '.jpeg', '.png', '.gif', '.webp']:
         raise HTTPException(status_code=400, detail="Invalid file type")
     
-    # Delete old profile image if exists
-    with get_db() as conn:
-        old = conn.execute("SELECT profile_image FROM users WHERE id = ?", (user_id,)).fetchone()
+    async with get_db() as conn:
+        if hasattr(conn, 'fetchrow'):
+            old = await conn.fetchrow("SELECT profile_image FROM users WHERE id = $1", user_id)
+        else:
+            cursor = await conn.execute("SELECT profile_image FROM users WHERE id = ?", (user_id,))
+            old = await cursor.fetchone()
+        
         if old and old['profile_image']:
             old_path = os.path.join(UPLOAD_DIR, os.path.basename(old['profile_image']))
             if os.path.exists(old_path):
                 os.remove(old_path)
-                logger.info(f"Deleted old profile image for user {user_id}")
     
-    # Save new image
     filename = f"{user_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}{file_extension}"
     filepath = os.path.join(UPLOAD_DIR, filename)
     
     with open(filepath, "wb") as buffer:
         buffer.write(contents)
     
-    # Store relative path
     image_path = f"/uploads/profiles/{filename}"
     base_url = os.getenv('BASE_URL', 'http://localhost:8000')
     full_url = f"{base_url}{image_path}"
     
-    # Update database
-    with get_db() as conn:
-        conn.execute(
-            "UPDATE users SET profile_image = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-            (image_path, user_id)
-        )
-        conn.commit()
-        logger.info(f"Profile image updated for user {user_id}: {image_path}")
+    async with get_db() as conn:
+        if hasattr(conn, 'execute'):
+            await conn.execute(
+                "UPDATE users SET profile_image = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2",
+                image_path, user_id
+            )
+        else:
+            await conn.execute(
+                "UPDATE users SET profile_image = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                image_path, user_id
+            )
     
     return {
         "success": True,
@@ -1488,9 +1101,12 @@ async def upload_profile_image(file: UploadFile = File(...), user_id: str = Depe
 
 @app.get("/users/profile/image")
 async def get_profile_image(user_id: str = Depends(verify_token)):
-    """Get current user's profile image URL"""
-    with get_db() as conn:
-        user = conn.execute("SELECT profile_image FROM users WHERE id = ?", (user_id,)).fetchone()
+    async with get_db() as conn:
+        if hasattr(conn, 'fetchrow'):
+            user = await conn.fetchrow("SELECT profile_image FROM users WHERE id = $1", user_id)
+        else:
+            cursor = await conn.execute("SELECT profile_image FROM users WHERE id = ?", (user_id,))
+            user = await cursor.fetchone()
         
         if not user or not user['profile_image']:
             return {"success": True, "profile_image": None}
@@ -1505,29 +1121,35 @@ async def get_profile_image(user_id: str = Depends(verify_token)):
 
 @app.delete("/users/profile/image")
 async def delete_profile_image(user_id: str = Depends(verify_token)):
-    """Delete profile image"""
-    with get_db() as conn:
-        user = conn.execute("SELECT profile_image FROM users WHERE id = ?", (user_id,)).fetchone()
+    async with get_db() as conn:
+        if hasattr(conn, 'fetchrow'):
+            user = await conn.fetchrow("SELECT profile_image FROM users WHERE id = $1", user_id)
+        else:
+            cursor = await conn.execute("SELECT profile_image FROM users WHERE id = ?", (user_id,))
+            user = await cursor.fetchone()
         
         if user and user['profile_image']:
             filepath = os.path.join(UPLOAD_DIR, os.path.basename(user['profile_image']))
             if os.path.exists(filepath):
                 os.remove(filepath)
-                logger.info(f"Deleted profile image for user {user_id}")
         
-        conn.execute("UPDATE users SET profile_image = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?", (user_id,))
-        conn.commit()
+        if hasattr(conn, 'execute'):
+            await conn.execute("UPDATE users SET profile_image = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = $1", user_id)
+        else:
+            await conn.execute("UPDATE users SET profile_image = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?", user_id)
     
     return {"success": True, "message": "Profile image deleted successfully"}
 
 @app.get("/users/{target_user_id}/profile-image")
 async def get_other_profile_image(target_user_id: str):
-    """Get any user's profile image (public) - returns file directly"""
-    with get_db() as conn:
-        user = conn.execute("SELECT profile_image FROM users WHERE id = ?", (target_user_id,)).fetchone()
+    async with get_db() as conn:
+        if hasattr(conn, 'fetchrow'):
+            user = await conn.fetchrow("SELECT profile_image FROM users WHERE id = $1", target_user_id)
+        else:
+            cursor = await conn.execute("SELECT profile_image FROM users WHERE id = ?", (target_user_id,))
+            user = await cursor.fetchone()
         
         if not user or not user['profile_image']:
-            # Return default avatar
             default_path = os.path.join(STATIC_DIR, "default-avatar.png")
             if os.path.exists(default_path):
                 return FileResponse(default_path, media_type="image/png")
@@ -1540,7 +1162,6 @@ async def get_other_profile_image(target_user_id: str):
         if os.path.exists(filepath):
             return FileResponse(filepath, media_type="image/jpeg")
         else:
-            # Return default avatar if file missing
             default_path = os.path.join(STATIC_DIR, "default-avatar.png")
             if os.path.exists(default_path):
                 return FileResponse(default_path, media_type="image/png")
@@ -1565,8 +1186,11 @@ async def root():
 @app.get("/health")
 async def health_check():
     try:
-        with get_db() as conn:
-            conn.execute("SELECT 1").fetchone()
+        async with get_db() as conn:
+            if hasattr(conn, 'fetchval'):
+                await conn.fetchval("SELECT 1")
+            else:
+                await conn.execute("SELECT 1")
         db_status = "healthy"
     except Exception as e:
         db_status = f"unhealthy: {str(e)}"
@@ -1585,14 +1209,19 @@ async def health_check():
     }
 
 # ============================================
-# AUTH ENDPOINTS (UPDATED WITH PROFILE IMAGE)
+# AUTH ENDPOINTS
 # ============================================
 
 @app.post("/auth/register")
 async def register(request: RegisterRequest):
     try:
-        with get_db() as conn:
-            existing = conn.execute("SELECT id FROM users WHERE email = ?", (request.email,)).fetchone()
+        async with get_db() as conn:
+            if hasattr(conn, 'fetchrow'):
+                existing = await conn.fetchrow("SELECT id FROM users WHERE email = $1", request.email)
+            else:
+                cursor = await conn.execute("SELECT id FROM users WHERE email = ?", (request.email,))
+                existing = await cursor.fetchone()
+            
             if existing:
                 return JSONResponse(
                     status_code=400,
@@ -1603,12 +1232,18 @@ async def register(request: RegisterRequest):
             password_hash = hash_password(request.password)
             is_approved = 1 if request.role == 'customer' else 0
             
-            conn.execute(
-                """INSERT INTO users (id, email, password_hash, name, role, is_approved, phone, address, created_at, updated_at) 
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)""",
-                (user_id, request.email, password_hash, request.name, request.role, is_approved, request.phone, request.address)
-            )
-            conn.commit()
+            if hasattr(conn, 'execute'):
+                await conn.execute(
+                    """INSERT INTO users (id, email, password_hash, name, role, is_approved, phone, address, created_at, updated_at) 
+                       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)""",
+                    user_id, request.email, password_hash, request.name, request.role, is_approved, request.phone, request.address
+                )
+            else:
+                await conn.execute(
+                    """INSERT INTO users (id, email, password_hash, name, role, is_approved, phone, address, created_at, updated_at) 
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)""",
+                    user_id, request.email, password_hash, request.name, request.role, is_approved, request.phone, request.address
+                )
         
         access_token = create_access_token({"sub": request.email, "user_id": user_id, "role": request.role})
         refresh_token = create_refresh_token(user_id)
@@ -1641,11 +1276,18 @@ async def register(request: RegisterRequest):
 @app.post("/auth/login")
 async def login(request: LoginRequest):
     try:
-        with get_db() as conn:
-            user = conn.execute(
-                "SELECT id, email, password_hash, name, role, is_approved, phone, address, profile_image, created_at FROM users WHERE email = ?",
-                (request.email,)
-            ).fetchone()
+        async with get_db() as conn:
+            if hasattr(conn, 'fetchrow'):
+                user = await conn.fetchrow(
+                    "SELECT id, email, password_hash, name, role, is_approved, phone, address, profile_image, created_at FROM users WHERE email = $1",
+                    request.email
+                )
+            else:
+                cursor = await conn.execute(
+                    "SELECT id, email, password_hash, name, role, is_approved, phone, address, profile_image, created_at FROM users WHERE email = ?",
+                    (request.email,)
+                )
+                user = await cursor.fetchone()
             
             if not user or not verify_password(request.password, user["password_hash"]):
                 return JSONResponse(
@@ -1659,13 +1301,20 @@ async def login(request: LoginRequest):
                     content={"success": False, "message": "Your vendor account is pending approval"}
                 )
             
-            conn.execute("UPDATE users SET last_login = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?", (user["id"],))
-            conn.commit()
+            if hasattr(conn, 'execute'):
+                await conn.execute(
+                    "UPDATE users SET last_login = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = $1",
+                    user["id"]
+                )
+            else:
+                await conn.execute(
+                    "UPDATE users SET last_login = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                    user["id"]
+                )
         
         access_token = create_access_token({"sub": user["email"], "user_id": user["id"], "role": user["role"]})
         refresh_token = create_refresh_token(user["id"])
         
-        # Convert profile image to full URL
         profile_image = user["profile_image"]
         base_url = os.getenv('BASE_URL', 'http://localhost:8000')
         
@@ -1703,8 +1352,13 @@ async def refresh_token(request: RefreshTokenRequest):
     try:
         user_id = verify_refresh_token(request.refresh_token)
         
-        with get_db() as conn:
-            user = conn.execute("SELECT id, email, role FROM users WHERE id = ?", (user_id,)).fetchone()
+        async with get_db() as conn:
+            if hasattr(conn, 'fetchrow'):
+                user = await conn.fetchrow("SELECT id, email, role FROM users WHERE id = $1", user_id)
+            else:
+                cursor = await conn.execute("SELECT id, email, role FROM users WHERE id = ?", (user_id,))
+                user = await cursor.fetchone()
+            
             if not user:
                 return JSONResponse(
                     status_code=401,
@@ -1736,13 +1390,22 @@ async def logout(user_id: str = Depends(verify_token)):
 
 @app.get("/users/me")
 async def get_current_user(user_id: str = Depends(verify_token)):
-    with get_db() as conn:
-        user = conn.execute(
-            """SELECT id, email, name, role, is_approved, created_at, updated_at, 
-                      last_login, phone, address, profile_image 
-               FROM users WHERE id = ?""",
-            (user_id,)
-        ).fetchone()
+    async with get_db() as conn:
+        if hasattr(conn, 'fetchrow'):
+            user = await conn.fetchrow(
+                """SELECT id, email, name, role, is_approved, created_at, updated_at, 
+                          last_login, phone, address, profile_image 
+                   FROM users WHERE id = $1""",
+                user_id
+            )
+        else:
+            cursor = await conn.execute(
+                """SELECT id, email, name, role, is_approved, created_at, updated_at, 
+                          last_login, phone, address, profile_image 
+                   FROM users WHERE id = ?""",
+                (user_id,)
+            )
+            user = await cursor.fetchone()
         
         if not user:
             return JSONResponse(
@@ -1752,7 +1415,6 @@ async def get_current_user(user_id: str = Depends(verify_token)):
         
         user_dict = dict(user)
         
-        # Convert relative path to full URL
         if user_dict.get('profile_image'):
             base_url = os.getenv('BASE_URL', 'http://localhost:8000')
             if not user_dict['profile_image'].startswith('http'):
@@ -1762,32 +1424,41 @@ async def get_current_user(user_id: str = Depends(verify_token)):
 
 @app.put("/users/me")
 async def update_profile(request: UpdateProfileRequest, user_id: str = Depends(verify_token)):
-    with get_db() as conn:
+    async with get_db() as conn:
         updates = []
         params = []
         
         if request.name is not None:
-            updates.append("name = ?")
+            updates.append("name = ?" if not hasattr(conn, 'execute') else "name = $1")
             params.append(request.name)
         if request.phone is not None:
-            updates.append("phone = ?")
+            idx = len(params) + 1
+            updates.append("phone = ?" if not hasattr(conn, 'execute') else f"phone = ${idx}")
             params.append(request.phone)
         if request.address is not None:
-            updates.append("address = ?")
+            idx = len(params) + 1
+            updates.append("address = ?" if not hasattr(conn, 'execute') else f"address = ${idx}")
             params.append(request.address)
         
-        updates.append("updated_at = CURRENT_TIMESTAMP")
-        
         if updates:
-            query = f"UPDATE users SET {', '.join(updates)} WHERE id = ?"
+            if hasattr(conn, 'execute'):
+                query = f"UPDATE users SET {', '.join(updates)}, updated_at = CURRENT_TIMESTAMP WHERE id = ${len(params) + 1}"
+            else:
+                query = f"UPDATE users SET {', '.join(updates)}, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
             params.append(user_id)
-            conn.execute(query, params)
-            conn.commit()
+            await conn.execute(query, *params)
         
-        user = conn.execute(
-            "SELECT id, email, name, role, phone, address, profile_image FROM users WHERE id = ?",
-            (user_id,)
-        ).fetchone()
+        if hasattr(conn, 'fetchrow'):
+            user = await conn.fetchrow(
+                "SELECT id, email, name, role, phone, address, profile_image FROM users WHERE id = $1",
+                user_id
+            )
+        else:
+            cursor = await conn.execute(
+                "SELECT id, email, name, role, phone, address, profile_image FROM users WHERE id = ?",
+                (user_id,)
+            )
+            user = await cursor.fetchone()
         
         user_dict = dict(user)
         if user_dict.get('profile_image'):
@@ -1799,8 +1470,12 @@ async def update_profile(request: UpdateProfileRequest, user_id: str = Depends(v
 
 @app.post("/auth/change-password")
 async def change_password(request: ChangePasswordRequest, user_id: str = Depends(verify_token)):
-    with get_db() as conn:
-        user = conn.execute("SELECT password_hash FROM users WHERE id = ?", (user_id,)).fetchone()
+    async with get_db() as conn:
+        if hasattr(conn, 'fetchrow'):
+            user = await conn.fetchrow("SELECT password_hash FROM users WHERE id = $1", user_id)
+        else:
+            cursor = await conn.execute("SELECT password_hash FROM users WHERE id = ?", (user_id,))
+            user = await cursor.fetchone()
         
         if not user or not verify_password(request.old_password, user["password_hash"]):
             return JSONResponse(
@@ -1809,11 +1484,17 @@ async def change_password(request: ChangePasswordRequest, user_id: str = Depends
             )
         
         new_password_hash = hash_password(request.new_password)
-        conn.execute(
-            "UPDATE users SET password_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-            (new_password_hash, user_id)
-        )
-        conn.commit()
+        
+        if hasattr(conn, 'execute'):
+            await conn.execute(
+                "UPDATE users SET password_hash = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2",
+                new_password_hash, user_id
+            )
+        else:
+            await conn.execute(
+                "UPDATE users SET password_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                new_password_hash, user_id
+            )
     
     return {"success": True, "message": "Password changed successfully"}
 
@@ -1837,19 +1518,28 @@ async def analyze_skin(file: UploadFile = File(...), user_id: str = Depends(veri
         skin_data = SKIN_CARE_DATA.get(skin_type, SKIN_CARE_DATA["normal"])
         
         analysis_id = str(uuid.uuid4())
-        with get_db() as conn:
-            conn.execute(
-                """INSERT INTO analyses (id, user_id, skin_type, skin_name, confidence, characteristics, recommendations, recommended_oils, method) 
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
+        
+        async with get_db() as conn:
+            if hasattr(conn, 'execute'):
+                await conn.execute(
+                    """INSERT INTO analyses (id, user_id, skin_type, skin_name, confidence, characteristics, recommendations, recommended_oils, method) 
+                       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)""",
                     analysis_id, user_id, skin_type, skin_data["name"], confidence,
                     "|".join(skin_data["characteristics"]),
                     "|".join(skin_data["recommendations"]),
                     "|".join(skin_data["oils"]),
                     method
                 )
-            )
-            conn.commit()
+            else:
+                await conn.execute(
+                    """INSERT INTO analyses (id, user_id, skin_type, skin_name, confidence, characteristics, recommendations, recommended_oils, method) 
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    analysis_id, user_id, skin_type, skin_data["name"], confidence,
+                    "|".join(skin_data["characteristics"]),
+                    "|".join(skin_data["recommendations"]),
+                    "|".join(skin_data["oils"]),
+                    method
+                )
         
         return {
             "success": True,
@@ -1871,27 +1561,37 @@ async def analyze_skin(file: UploadFile = File(...), user_id: str = Depends(veri
 
 @app.get("/analyses")
 async def get_user_analyses(limit: int = 10, user_id: str = Depends(verify_token)):
-    with get_db() as conn:
-        analyses = conn.execute(
-            """SELECT id, skin_type, skin_name, confidence, method, created_at 
-               FROM analyses WHERE user_id = ? ORDER BY created_at DESC LIMIT ?""",
-            (user_id, limit)
-        ).fetchall()
+    async with get_db() as conn:
+        if hasattr(conn, 'fetch'):
+            analyses = await conn.fetch(
+                """SELECT id, skin_type, skin_name, confidence, method, created_at 
+                   FROM analyses WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2""",
+                user_id, limit
+            )
+        else:
+            cursor = await conn.execute(
+                """SELECT id, skin_type, skin_name, confidence, method, created_at 
+                   FROM analyses WHERE user_id = ? ORDER BY created_at DESC LIMIT ?""",
+                (user_id, limit)
+            )
+            analyses = await cursor.fetchall()
         
-        parsed_analyses = []
-        for a in analyses:
-            item = dict(a)
-            parsed_analyses.append(item)
-        
-        return {"success": True, "analyses": parsed_analyses}
+        return {"success": True, "analyses": [dict(a) for a in analyses]}
 
 @app.get("/analyses/{analysis_id}")
 async def get_analysis_detail(analysis_id: str, user_id: str = Depends(verify_token)):
-    with get_db() as conn:
-        analysis = conn.execute(
-            """SELECT * FROM analyses WHERE id = ? AND user_id = ?""",
-            (analysis_id, user_id)
-        ).fetchone()
+    async with get_db() as conn:
+        if hasattr(conn, 'fetchrow'):
+            analysis = await conn.fetchrow(
+                """SELECT * FROM analyses WHERE id = $1 AND user_id = $2""",
+                analysis_id, user_id
+            )
+        else:
+            cursor = await conn.execute(
+                """SELECT * FROM analyses WHERE id = ? AND user_id = ?""",
+                (analysis_id, user_id)
+            )
+            analysis = await cursor.fetchone()
         
         if not analysis:
             raise HTTPException(status_code=404, detail="Analysis not found")
@@ -1908,11 +1608,18 @@ async def get_analysis_detail(analysis_id: str, user_id: str = Depends(verify_to
 
 @app.get("/users/stats")
 async def get_user_stats(user_id: str = Depends(verify_token)):
-    with get_db() as conn:
-        analyses = conn.execute(
-            "SELECT skin_type, confidence, created_at FROM analyses WHERE user_id = ? ORDER BY created_at DESC",
-            (user_id,)
-        ).fetchall()
+    async with get_db() as conn:
+        if hasattr(conn, 'fetch'):
+            analyses = await conn.fetch(
+                "SELECT skin_type, confidence, created_at FROM analyses WHERE user_id = $1 ORDER BY created_at DESC",
+                user_id
+            )
+        else:
+            cursor = await conn.execute(
+                "SELECT skin_type, confidence, created_at FROM analyses WHERE user_id = ? ORDER BY created_at DESC",
+                (user_id,)
+            )
+            analyses = await cursor.fetchall()
         
         if not analyses:
             return {
@@ -1942,7 +1649,7 @@ async def get_user_stats(user_id: str = Depends(verify_token)):
         }
 
 # ============================================
-# WEATHER ENDPOINTS (PAN-AFRICAN)
+# WEATHER ENDPOINTS
 # ============================================
 
 @app.get("/weather/{lat}/{lon}")
@@ -1982,7 +1689,7 @@ async def get_sunscreen_recommendation_endpoint(uv_index: float, skin_type: str 
     return {"success": True, **get_sunscreen_recommendation(uv_index, skin_type)}
 
 # ============================================
-# CHAT ENDPOINT (BILINGUAL, LESS RESTRICTIVE)
+# CHAT ENDPOINT
 # ============================================
 
 @app.post("/chat")
@@ -1994,7 +1701,6 @@ async def chat_endpoint(request: ChatRequest, user_id: str = Depends(verify_toke
         else:
             return {"success": False, "response": "Please write your question."}
     
-    # Check if message is skin-related
     is_related, confidence, language = is_skin_related(request.message)
     
     if not is_related:
@@ -2005,16 +1711,22 @@ async def chat_endpoint(request: ChatRequest, user_id: str = Depends(verify_toke
             "language": language
         }
     
-    # Get user context
-    with get_db() as conn:
-        latest_analysis = conn.execute(
-            "SELECT skin_type FROM analyses WHERE user_id = ? ORDER BY created_at DESC LIMIT 1",
-            (user_id,)
-        ).fetchone()
-        
-        user = conn.execute("SELECT name FROM users WHERE id = ?", (user_id,)).fetchone()
+    async with get_db() as conn:
+        if hasattr(conn, 'fetchrow'):
+            latest_analysis = await conn.fetchrow(
+                "SELECT skin_type FROM analyses WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1",
+                user_id
+            )
+            user = await conn.fetchrow("SELECT name FROM users WHERE id = $1", user_id)
+        else:
+            cursor1 = await conn.execute(
+                "SELECT skin_type FROM analyses WHERE user_id = ? ORDER BY created_at DESC LIMIT 1",
+                (user_id,)
+            )
+            latest_analysis = await cursor1.fetchone()
+            cursor2 = await conn.execute("SELECT name FROM users WHERE id = ?", (user_id,))
+            user = await cursor2.fetchone()
     
-    # Natural system context
     system_context = """You are a skincare expert. Give detailed, natural advice about skincare.
 
 You can respond at appropriate length. Give examples, reasons, and practical tips.
@@ -2034,17 +1746,10 @@ Respond in the same language as the user (Swahili or English)."""
             "normal": "normal"
         }
         skin_name = skin_type_map.get(latest_analysis['skin_type'], latest_analysis['skin_type'])
-        
-        if language == "swahili":
-            system_context += f"\n\nThe user has {skin_name} skin type. Provide advice tailored to this skin type."
-        else:
-            system_context += f"\n\nThe user has {skin_name} skin type. Provide advice tailored to this skin type."
+        system_context += f"\n\nThe user has {skin_name} skin type. Provide advice tailored to this skin type."
     
     if user and user['name']:
-        if language == "swahili":
-            system_context += f"\n\nThe user's name is {user['name']}."
-        else:
-            system_context += f"\n\nThe user's name is {user['name']}."
+        system_context += f"\n\nThe user's name is {user['name']}."
     
     result = await ChatService.get_response(
         user_message=request.message,
@@ -2055,15 +1760,22 @@ Respond in the same language as the user (Swahili or English)."""
     )
     
     if result.get("success"):
-        with get_db() as conn:
+        async with get_db() as conn:
             chat_id = str(uuid.uuid4())
-            conn.execute(
-                """INSERT INTO chat_history (id, user_id, user_message, assistant_response, provider, skin_context) 
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                (chat_id, user_id, request.message, result["response"], result.get("provider"), 
-                 latest_analysis["skin_type"] if latest_analysis else None)
-            )
-            conn.commit()
+            if hasattr(conn, 'execute'):
+                await conn.execute(
+                    """INSERT INTO chat_history (id, user_id, user_message, assistant_response, provider, skin_context) 
+                       VALUES ($1, $2, $3, $4, $5, $6)""",
+                    chat_id, user_id, request.message, result["response"], result.get("provider"), 
+                    latest_analysis["skin_type"] if latest_analysis else None
+                )
+            else:
+                await conn.execute(
+                    """INSERT INTO chat_history (id, user_id, user_message, assistant_response, provider, skin_context) 
+                       VALUES (?, ?, ?, ?, ?, ?)""",
+                    chat_id, user_id, request.message, result["response"], result.get("provider"), 
+                    latest_analysis["skin_type"] if latest_analysis else None
+                )
     
     if not result.get("response"):
         result["response"] = get_skincare_fallback_response(request.message)
@@ -2072,15 +1784,20 @@ Respond in the same language as the user (Swahili or English)."""
 
 @app.get("/chat/history")
 async def get_chat_history(limit: int = 50, user_id: str = Depends(verify_token)):
-    with get_db() as conn:
-        history = conn.execute(
-            """SELECT id, user_message, assistant_response, provider, created_at 
-               FROM chat_history 
-               WHERE user_id = ? 
-               ORDER BY created_at ASC 
-               LIMIT ?""",
-            (user_id, limit)
-        ).fetchall()
+    async with get_db() as conn:
+        if hasattr(conn, 'fetch'):
+            history = await conn.fetch(
+                """SELECT id, user_message, assistant_response, provider, created_at 
+                   FROM chat_history WHERE user_id = $1 ORDER BY created_at ASC LIMIT $2""",
+                user_id, limit
+            )
+        else:
+            cursor = await conn.execute(
+                """SELECT id, user_message, assistant_response, provider, created_at 
+                   FROM chat_history WHERE user_id = ? ORDER BY created_at ASC LIMIT ?""",
+                (user_id, limit)
+            )
+            history = await cursor.fetchall()
         
         messages = []
         for h in history:
@@ -2095,25 +1812,30 @@ async def get_chat_history(limit: int = 50, user_id: str = Depends(verify_token)
 
 @app.delete("/chat/history")
 async def clear_chat_history(user_id: str = Depends(verify_token)):
-    with get_db() as conn:
-        conn.execute("DELETE FROM chat_history WHERE user_id = ?", (user_id,))
-        conn.commit()
+    async with get_db() as conn:
+        if hasattr(conn, 'execute'):
+            await conn.execute("DELETE FROM chat_history WHERE user_id = $1", user_id)
+        else:
+            await conn.execute("DELETE FROM chat_history WHERE user_id = ?", (user_id,))
     
     return {"success": True, "message": "Chat history cleared successfully"}
 
 @app.delete("/chat/history/{message_id}")
 async def delete_chat_message(message_id: str, user_id: str = Depends(verify_token)):
-    with get_db() as conn:
-        chat = conn.execute(
-            "SELECT id FROM chat_history WHERE id = ? AND user_id = ?",
-            (message_id, user_id)
-        ).fetchone()
+    async with get_db() as conn:
+        if hasattr(conn, 'fetchrow'):
+            chat = await conn.fetchrow("SELECT id FROM chat_history WHERE id = $1 AND user_id = $2", message_id, user_id)
+        else:
+            cursor = await conn.execute("SELECT id FROM chat_history WHERE id = ? AND user_id = ?", (message_id, user_id))
+            chat = await cursor.fetchone()
         
         if not chat:
             raise HTTPException(status_code=404, detail="Chat message not found")
         
-        conn.execute("DELETE FROM chat_history WHERE id = ?", (message_id,))
-        conn.commit()
+        if hasattr(conn, 'execute'):
+            await conn.execute("DELETE FROM chat_history WHERE id = $1", message_id)
+        else:
+            await conn.execute("DELETE FROM chat_history WHERE id = ?", (message_id,))
     
     return {"success": True, "message": "Chat message deleted successfully"}
 
@@ -2163,7 +1885,7 @@ async def check_topic_relevance(request: ChatRequest, user_id: str = Depends(ver
             }
 
 # ============================================
-# PRODUCT ENDPOINTS
+# PRODUCT ENDPOINTS (Simplified - keep existing structure)
 # ============================================
 
 @app.get("/products")
@@ -2177,47 +1899,97 @@ async def get_products(
     limit: int = 20,
     offset: int = 0
 ):
-    with get_db() as conn:
-        query = """
-            SELECT p.*, s.name as store_name, s.logo_url as store_logo
-            FROM products p
-            JOIN stores s ON p.store_id = s.id
-            WHERE p.is_approved = 1 AND p.is_active = 1
-        """
-        params = []
-        
-        if category and category != "all":
-            query += " AND p.category = ?"
-            params.append(category)
-        if skin_type and skin_type != "all":
-            query += " AND p.skin_type = ?"
-            params.append(skin_type)
-        if min_price is not None:
-            query += " AND p.price >= ?"
-            params.append(min_price)
-        if max_price is not None:
-            query += " AND p.price <= ?"
-            params.append(max_price)
-        if search:
-            query += " AND (p.name LIKE ? OR p.description LIKE ?)"
-            params.extend([f"%{search}%", f"%{search}%"])
-        
-        sort_map = {
-            "newest": "p.created_at DESC",
-            "price_low": "p.price ASC",
-            "price_high": "p.price DESC",
-            "popular": "p.sales_count DESC",
-            "rating": "p.rating DESC"
-        }
-        query += f" ORDER BY {sort_map.get(sort_by, 'p.created_at DESC')} LIMIT ? OFFSET ?"
-        params.extend([limit, offset])
-        
-        products = conn.execute(query, params).fetchall()
-        
-        total = conn.execute(
-            "SELECT COUNT(*) as count FROM products WHERE is_approved = 1 AND is_active = 1",
-            []
-        ).fetchone()["count"]
+    async with get_db() as conn:
+        # Build query based on database type
+        if hasattr(conn, 'fetch'):
+            # PostgreSQL
+            query = """
+                SELECT p.*, s.name as store_name, s.logo_url as store_logo
+                FROM products p
+                JOIN stores s ON p.store_id = s.id
+                WHERE p.is_approved = 1 AND p.is_active = 1
+            """
+            params = []
+            param_count = 1
+            
+            if category and category != "all":
+                query += f" AND p.category = ${param_count}"
+                params.append(category)
+                param_count += 1
+            if skin_type and skin_type != "all":
+                query += f" AND p.skin_type = ${param_count}"
+                params.append(skin_type)
+                param_count += 1
+            if min_price is not None:
+                query += f" AND p.price >= ${param_count}"
+                params.append(min_price)
+                param_count += 1
+            if max_price is not None:
+                query += f" AND p.price <= ${param_count}"
+                params.append(max_price)
+                param_count += 1
+            if search:
+                query += f" AND (p.name LIKE $${param_count} OR p.description LIKE $${param_count + 1})"
+                params.extend([f"%{search}%", f"%{search}%"])
+                param_count += 2
+            
+            sort_map = {
+                "newest": "p.created_at DESC",
+                "price_low": "p.price ASC",
+                "price_high": "p.price DESC",
+                "popular": "p.sales_count DESC",
+                "rating": "p.rating DESC"
+            }
+            query += f" ORDER BY {sort_map.get(sort_by, 'p.created_at DESC')} LIMIT ${param_count} OFFSET ${param_count + 1}"
+            params.extend([limit, offset])
+            
+            products = await conn.fetch(query, *params)
+            
+            total = await conn.fetchval(
+                "SELECT COUNT(*) as count FROM products WHERE is_approved = 1 AND is_active = 1"
+            )
+        else:
+            # SQLite
+            query = """
+                SELECT p.*, s.name as store_name, s.logo_url as store_logo
+                FROM products p
+                JOIN stores s ON p.store_id = s.id
+                WHERE p.is_approved = 1 AND p.is_active = 1
+            """
+            params = []
+            
+            if category and category != "all":
+                query += " AND p.category = ?"
+                params.append(category)
+            if skin_type and skin_type != "all":
+                query += " AND p.skin_type = ?"
+                params.append(skin_type)
+            if min_price is not None:
+                query += " AND p.price >= ?"
+                params.append(min_price)
+            if max_price is not None:
+                query += " AND p.price <= ?"
+                params.append(max_price)
+            if search:
+                query += " AND (p.name LIKE ? OR p.description LIKE ?)"
+                params.extend([f"%{search}%", f"%{search}%"])
+            
+            sort_map = {
+                "newest": "p.created_at DESC",
+                "price_low": "p.price ASC",
+                "price_high": "p.price DESC",
+                "popular": "p.sales_count DESC",
+                "rating": "p.rating DESC"
+            }
+            query += f" ORDER BY {sort_map.get(sort_by, 'p.created_at DESC')} LIMIT ? OFFSET ?"
+            params.extend([limit, offset])
+            
+            cursor = await conn.execute(query, params)
+            products = await cursor.fetchall()
+            
+            total_cursor = await conn.execute("SELECT COUNT(*) as count FROM products WHERE is_approved = 1 AND is_active = 1")
+            total_row = await total_cursor.fetchone()
+            total = total_row["count"] if total_row else 0
         
         return {
             "success": True,
@@ -2249,15 +2021,26 @@ async def get_categories():
 async def recommend_products(lat: float, lon: float, skin_type: str):
     weather = get_dynamic_weather(lat, lon)
     
-    with get_db() as conn:
-        products = conn.execute(
-            """SELECT * FROM products 
-               WHERE is_approved = 1 AND is_active = 1 
-               AND (skin_type = ? OR skin_type = 'all')
-               ORDER BY rating DESC, sales_count DESC
-               LIMIT 10""",
-            (skin_type,)
-        ).fetchall()
+    async with get_db() as conn:
+        if hasattr(conn, 'fetch'):
+            products = await conn.fetch(
+                """SELECT * FROM products 
+                   WHERE is_approved = 1 AND is_active = 1 
+                   AND (skin_type = $1 OR skin_type = 'all')
+                   ORDER BY rating DESC, sales_count DESC
+                   LIMIT 10""",
+                skin_type
+            )
+        else:
+            cursor = await conn.execute(
+                """SELECT * FROM products 
+                   WHERE is_approved = 1 AND is_active = 1 
+                   AND (skin_type = ? OR skin_type = 'all')
+                   ORDER BY rating DESC, sales_count DESC
+                   LIMIT 10""",
+                (skin_type,)
+            )
+            products = await cursor.fetchall()
         
         return {
             "success": True,
@@ -2271,37 +2054,68 @@ async def recommend_products(lat: float, lon: float, skin_type: str):
 
 @app.get("/products/{product_id}")
 async def get_product_detail(product_id: str):
-    with get_db() as conn:
-        conn.execute("UPDATE products SET views = views + 1 WHERE id = ?", (product_id,))
-        conn.commit()
+    async with get_db() as conn:
+        if hasattr(conn, 'execute'):
+            await conn.execute("UPDATE products SET views = views + 1 WHERE id = $1", product_id)
+        else:
+            await conn.execute("UPDATE products SET views = views + 1 WHERE id = ?", (product_id,))
         
-        product = conn.execute(
-            """SELECT p.*, s.name as store_name, s.address as store_address, s.rating as store_rating
-               FROM products p
-               JOIN stores s ON p.store_id = s.id
-               WHERE p.id = ? AND p.is_approved = 1""",
-            (product_id,)
-        ).fetchone()
+        if hasattr(conn, 'fetchrow'):
+            product = await conn.fetchrow(
+                """SELECT p.*, s.name as store_name, s.address as store_address, s.rating as store_rating
+                   FROM products p
+                   JOIN stores s ON p.store_id = s.id
+                   WHERE p.id = $1 AND p.is_approved = 1""",
+                product_id
+            )
+        else:
+            cursor = await conn.execute(
+                """SELECT p.*, s.name as store_name, s.address as store_address, s.rating as store_rating
+                   FROM products p
+                   JOIN stores s ON p.store_id = s.id
+                   WHERE p.id = ? AND p.is_approved = 1""",
+                (product_id,)
+            )
+            product = await cursor.fetchone()
         
         if not product:
             raise HTTPException(status_code=404, detail="Product not found")
         
-        reviews = conn.execute(
-            """SELECT r.*, u.name as user_name, u.profile_image as user_image
-               FROM reviews r
-               JOIN users u ON r.user_id = u.id
-               WHERE r.product_id = ?
-               ORDER BY r.created_at DESC LIMIT 10""",
-            (product_id,)
-        ).fetchall()
-        
-        related = conn.execute(
-            """SELECT id, name, price, images, rating
-               FROM products
-               WHERE skin_type = ? AND id != ? AND is_approved = 1
-               LIMIT 5""",
-            (product["skin_type"], product_id)
-        ).fetchall()
+        if hasattr(conn, 'fetch'):
+            reviews = await conn.fetch(
+                """SELECT r.*, u.name as user_name, u.profile_image as user_image
+                   FROM reviews r
+                   JOIN users u ON r.user_id = u.id
+                   WHERE r.product_id = $1
+                   ORDER BY r.created_at DESC LIMIT 10""",
+                product_id
+            )
+            related = await conn.fetch(
+                """SELECT id, name, price, images, rating
+                   FROM products
+                   WHERE skin_type = $1 AND id != $2 AND is_approved = 1
+                   LIMIT 5""",
+                product["skin_type"], product_id
+            )
+        else:
+            cursor_r = await conn.execute(
+                """SELECT r.*, u.name as user_name, u.profile_image as user_image
+                   FROM reviews r
+                   JOIN users u ON r.user_id = u.id
+                   WHERE r.product_id = ?
+                   ORDER BY r.created_at DESC LIMIT 10""",
+                (product_id,)
+            )
+            reviews = await cursor_r.fetchall()
+            
+            cursor_rel = await conn.execute(
+                """SELECT id, name, price, images, rating
+                   FROM products
+                   WHERE skin_type = ? AND id != ? AND is_approved = 1
+                   LIMIT 5""",
+                (product["skin_type"], product_id)
+            )
+            related = await cursor_rel.fetchall()
         
         return {
             "success": True,
@@ -2311,16 +2125,9 @@ async def get_product_detail(product_id: str):
         }
 
 # ============================================
-# VENDOR ENDPOINTS (Keep existing)
-# ============================================
-
-# ... (Vendor endpoints remain the same as before)
-
-# ============================================
 # STATIC FILES
 # ============================================
 
-# Mount directories for static files
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
@@ -2341,7 +2148,7 @@ if __name__ == "__main__":
     print(f"🌍 Weather API: {'✅ Configured' if WEATHER_API_KEY else '❌ Not configured'}")
     print(f"🤖 OpenAI: {'✅ Configured' if OPENAI_API_KEY else '❌ Not configured'}")
     print(f"🤖 Gemini: {'✅ Configured' if GEMINI_API_KEY else '❌ Not configured'}")
-    print(f"💾 Database: SQLite with WAL mode")
+    print(f"💾 Database: PostgreSQL (Production) / SQLite (Local)")
     print(f"🌍 Region: Pan-African")
     print(f"💬 Chat Mode: Bilingual - Skincare Focused")
     print(f"📸 Profile Images: Enabled (saved to uploads/profiles/)")
