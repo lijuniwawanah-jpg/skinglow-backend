@@ -1,4 +1,38 @@
-venv/ 
-__pycache__/ 
-*.pyc 
-.env 
+# Hakikisha .gitignore ina hizi lines:
+echo "
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+ENV/
+.venv/
+
+# Environment
+.env
+.env.local
+.env.production
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+skinglow.db
+
+# Uploads
+uploads/
+media/
+static/default-avatar.png
+
+# Railway
+.railway/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+" > .gitignore
