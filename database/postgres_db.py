@@ -13,15 +13,15 @@ try:
     HAS_PG = True
 except ImportError:
     HAS_PG = False
-    import sqlite3
     import aiosqlite
+    import sqlite3
 
 from dotenv import load_dotenv
 
 load_dotenv()
 logger = logging.getLogger(__name__)
 
-# Get DATABASE_URL from environment (Railway will provide this)
+# Get DATABASE_URL from environment
 DATABASE_URL = os.getenv('DATABASE_URL', '')
 
 # Check if we should use PostgreSQL (only on Railway with DATABASE_URL)
@@ -45,7 +45,7 @@ if USE_POSTGRES:
                 await conn.close()
     
     async def init_db():
-        """Initialize PostgreSQL tables (keep existing schema)"""
+        """Initialize PostgreSQL tables"""
         conn = await asyncpg.connect(DATABASE_URL)
         
         try:
@@ -107,22 +107,11 @@ if USE_POSTGRES:
                 )
             ''')
             
-            # Check and add profile_image column if missing
-            col_check = await conn.fetch('''
-                SELECT column_name FROM information_schema.columns 
-                WHERE table_name = 'users' AND column_name = 'profile_image'
-            ''')
-            
-            if not col_check:
-                await conn.execute('ALTER TABLE users ADD COLUMN profile_image TEXT')
-                logger.info("Added profile_image column to users table")
-            
             # Create indexes
             await conn.execute('CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)')
             await conn.execute('CREATE INDEX IF NOT EXISTS idx_analyses_user_id ON analyses(user_id)')
-            await conn.execute('CREATE INDEX IF NOT EXISTS idx_chat_history_user_id ON chat_history(user_id)')
             
-            logger.info("✅ PostgreSQL tables ready")
+            logger.info("✅ PostgreSQL tables created successfully!")
             
         except Exception as e:
             logger.error(f"Database init error: {e}")
@@ -131,11 +120,10 @@ if USE_POSTGRES:
             await conn.close()
     
     async def migrate_data():
-        """Migrate existing SQLite data to PostgreSQL (only if needed)"""
+        """Migrate existing SQLite data to PostgreSQL"""
         import aiosqlite
         import os
         
-        # Check if SQLite exists and has data
         sqlite_path = 'skinglow.db'
         if not os.path.exists(sqlite_path):
             logger.info("No SQLite database found, skipping migration")
@@ -153,11 +141,8 @@ if USE_POSTGRES:
         
         logger.info("Migrating data from SQLite to PostgreSQL...")
         
-        # Connect to SQLite
         sqlite_conn = await aiosqlite.connect(sqlite_path)
         sqlite_conn.row_factory = aiosqlite.Row
-        
-        # Connect to PostgreSQL
         pg_conn = await asyncpg.connect(DATABASE_URL)
         
         try:
@@ -192,20 +177,6 @@ if USE_POSTGRES:
                     analysis['recommendations'], analysis['recommended_oils'], analysis['created_at'])
             
             logger.info(f"✅ Migrated {len(analyses_list)} analyses")
-            
-            # Migrate chat history
-            chats = await sqlite_conn.execute("SELECT * FROM chat_history")
-            chats_list = await chats.fetchall()
-            
-            for chat in chats_list:
-                await pg_conn.execute('''
-                    INSERT INTO chat_history (id, user_id, user_message, assistant_response, provider, created_at)
-                    VALUES ($1, $2, $3, $4, $5, $6)
-                    ON CONFLICT (id) DO NOTHING
-                ''', chat['id'], chat['user_id'], chat['user_message'],
-                    chat['assistant_response'], chat.get('provider'), chat['created_at'])
-            
-            logger.info(f"✅ Migrated {len(chats_list)} chat messages")
             logger.info("✅ Data migration completed!")
             
         except Exception as e:
@@ -217,7 +188,6 @@ if USE_POSTGRES:
 else:
     logger.info("✅ Using SQLite database (local development)")
     
-    # SQLite database file path
     SQLITE_DB_FILE = "skinglow.db"
     
     @asynccontextmanager
@@ -235,12 +205,12 @@ else:
             await conn.close()
     
     async def init_db():
-        """Initialize SQLite tables (same schema as before)"""
+        """Initialize SQLite tables"""
         import aiosqlite
         
         conn = await aiosqlite.connect(SQLITE_DB_FILE)
         
-        # USERS TABLE
+        # Users table
         await conn.execute('''
             CREATE TABLE IF NOT EXISTS users (
                 id TEXT PRIMARY KEY,
@@ -265,7 +235,7 @@ else:
             )
         ''')
         
-        # ANALYSES TABLE
+        # Analyses table
         await conn.execute('''
             CREATE TABLE IF NOT EXISTS analyses (
                 id TEXT PRIMARY KEY,
@@ -284,7 +254,7 @@ else:
             )
         ''')
         
-        # CHAT HISTORY TABLE
+        # Chat history table
         await conn.execute('''
             CREATE TABLE IF NOT EXISTS chat_history (
                 id TEXT PRIMARY KEY,
@@ -298,18 +268,9 @@ else:
             )
         ''')
         
-        # Check and add profile_image column if missing
-        cursor = await conn.execute("PRAGMA table_info(users)")
-        columns = await cursor.fetchall()
-        column_names = [col[1] for col in columns]
-        
-        if 'profile_image' not in column_names:
-            await conn.execute("ALTER TABLE users ADD COLUMN profile_image TEXT")
-            logger.info("Added profile_image column to users table")
-        
         await conn.commit()
         await conn.close()
-        logger.info("✅ SQLite tables ready")
+        logger.info("✅ SQLite tables created successfully!")
     
     async def migrate_data():
         """No migration needed for SQLite"""
