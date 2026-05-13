@@ -1,6 +1,6 @@
 # ============================================
-# SKINGLOW AI - PAN-AFRICAN MASTER PRODUCTION BACKEND v5.0
-# Full Integration: Analysis, Marketplace, AI Chat & Pan-African Weather
+# SKINGLOW AI - PAN-AFRICAN MASTER PRODUCTION BACKEND v5.1
+# Full Integration: Analysis, Marketplace, AI Chat (Skincare Only) & Pan-African Weather
 # Optimized by Ashraf Hamis Athumani (Wawanah)
 # ============================================
 
@@ -29,6 +29,7 @@ from collections import Counter
 import logging
 import time
 from functools import wraps
+import re
 
 # Load environment variables
 load_dotenv()
@@ -54,7 +55,7 @@ logger = logging.getLogger(__name__)
 app = FastAPI(
     title="SkinGlow AI Master Production",
     description="Professional Skin Analysis and E-commerce API - Pan-African",
-    version="5.0.0"
+    version="5.1.0"
 )
 
 # CORS Configuration for production
@@ -347,7 +348,7 @@ init_db()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
-    logger.info("🚀 Starting SkinGlow AI Pan-African Production Server v5.0...")
+    logger.info("🚀 Starting SkinGlow AI Pan-African Production Server v5.1...")
     logger.info(f"MediaPipe: {'Available' if MEDIAPIPE_AVAILABLE else 'Not available'}")
     logger.info(f"OpenAI: {'Configured' if OPENAI_API_KEY else 'Not configured'}")
     logger.info(f"Gemini: {'Configured' if GEMINI_API_KEY else 'Not configured'}")
@@ -359,7 +360,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="SkinGlow AI Master Production",
     description="Professional Skin Analysis and E-commerce API - Pan-African",
-    version="5.0.0",
+    version="5.1.0",
     lifespan=lifespan
 )
 
@@ -482,8 +483,8 @@ class ChatRequest(BaseModel):
     message: str
     system_context: Optional[str] = None
     conversation_history: Optional[List[Dict[str, str]]] = None
-    max_tokens: Optional[int] = 300
-    temperature: Optional[float] = 0.7
+    max_tokens: Optional[int] = 200
+    temperature: Optional[float] = 0.4
 
 class ProductCreateRequest(BaseModel):
     name: str
@@ -543,6 +544,339 @@ if GEMINI_API_KEY:
         logger.warning("⚠️ Gemini AI not available")
 
 # ============================================
+# CHAT TOPIC FILTER (SKINCARE ONLY)
+# ============================================
+
+# Allowed skincare keywords
+SKIN_KEYWORDS = [
+    # Skin types (English & Swahili)
+    "ngozi", "skin", "dry", "kavu", "oily", "mafuta", "combination", "sensitive", "nyeti",
+    "normal", "kawaida", "acne-prone", "chunusi",
+    
+    # Skin problems
+    "acne", "chunusi", "pimple", "pimples", "breakout", "spot", "doa", "blackhead", "whitehead",
+    "rash", "upele", "itch", "kuwasha", "redness", "uwekundu", "inflammation", "uvimbe",
+    "wrinkle", "kukunja", "aging", "uzeeni", "dark spot", "hyperpigmentation", "albinism",
+    "eczema", "psoriasis", "dermatitis", "allergy", "mzio", "scar", "kovu",
+    
+    # Products
+    "cleanser", "sabuni", "moisturizer", "cream", "lotion", "gel", "foam",
+    "sunscreen", "spf", "sunblock", "serum", "toner", "mask", "exfoliator", "scrub",
+    "oil", "mafuta", "shea", "aloe", "coconut", "jojoba", "argan", "rosehip",
+    "retinol", "vitamin c", "hyaluronic", "niacinamide", "salicylic", "glycolic",
+    "ceramide", "peptide", "antioxidant", "squalane",
+    
+    # Routines & Actions
+    "routine", "utaratibu", "care", "utunzaji", "wash", "osha", "clean", "safisha",
+    "apply", "weka", "remove", "ondoa", "protect", "kinga", "treat", "tibu",
+    
+    # UV & Sun
+    "uv", "jua", "sun", "sunlight", "mionzi", "radiation", "protection", "kinga",
+    "tan", "sunburn", "chomea", "spf30", "spf50",
+    
+    # Body parts
+    "uso", "face", "mikono", "hands", "miguu", "feet", "mwili", "body", "neck", "shingo",
+    
+    # Professionals
+    "dermatologist", "daktari wa ngozi", "skincare specialist",
+    
+    # Ingredients
+    "ingredient", "kiungo", "natural", "asili", "organic", "safe", "salama"
+]
+
+# Off-topic patterns to detect
+OFF_TOPIC_PATTERNS = [
+    r"who is|nani ni|tell me about|niambie kuhusu",
+    r"history of|historia ya|what is the capital|mji mkuu",
+    r"president|rais|election|uchaguzi|political|siasa",
+    r"football|soka|sports|michezo|game|match|mechi",
+    r"movie|sinema|film|actor|actress|celebrities|watu maarufu",
+    r"musician|singer|mwimbaji|song|wimbo|album|artist|msanii",
+    r"stock|investment|fedha|money|pesa|finance|biashara",
+    r"religion|dini|church|kanisa|mosque|msikiti|prayer|swala",
+    r"relationship|dating|love|mapenzi|marriage|ndoa",
+    r"technology|teknolojia|programming|computer|simu|phone",
+    r"weather|hali ya hewa|rain|mvua"  # UV is allowed but general weather is not
+]
+
+def is_skin_related(message: str) -> tuple:
+    """Check if message is related to skincare"""
+    message_lower = message.lower()
+    
+    # Check for UV (allowed but specific)
+    if "uv" in message_lower and "sun" in message_lower or "protection" in message_lower:
+        return True, "uv_protection"
+    
+    # Check if message contains any skin-related keyword
+    for keyword in SKIN_KEYWORDS:
+        if keyword.lower() in message_lower:
+            return True, "skin_related"
+    
+    # Check off-topic patterns
+    for pattern in OFF_TOPIC_PATTERNS:
+        if re.search(pattern, message_lower):
+            return False, "off_topic"
+    
+    # Default - treat as off-topic if no keywords found
+    return False, "no_skin_keywords"
+
+def get_skincare_fallback_response(message: str) -> str:
+    """Return skincare-focused fallback response"""
+    message_lower = message.lower()
+    
+    if "acne" in message_lower or "chunusi" in message_lower:
+        return """Kwa acne (chunusi), napendekeza:
+✅ Tumia cleanser yenye salicylic acid au benzoyl peroxide
+✅ Usiguse au kubana chunusi
+✅ Tumia moisturizer lightweight (isiyo na mafuta)
+✅ Omba sunscreen SPF 30+ kila siku
+✅ Epuka vyakula vya mafuta mengi na sukari
+
+Je, ungependa kujua zaidi kuhusu bidhaa maalum za acne?"""
+
+    elif "dry" in message_lower or "kavu" in message_lower:
+        return """Kwa ngozi kavu (dry skin), napendekeza:
+✅ Tumia hydrating cleanser (isiyo na sulfate)
+✅ Omba hyaluronic acid serum
+✅ Tumia rich moisturizer yenye ceramides au shea butter
+✅ Ongeza facial oil kama argan au jojoba
+✅ Kunywa maji mengi (angalau lita 2 kwa siku)
+
+Je, unahitaji ushauri wa bidhaa za ngozi kavu?"""
+
+    elif "oily" in message_lower or "mafuta" in message_lower:
+        return """Kwa ngozi yenye mafuta (oily skin), napendekeza:
+✅ Tumia foaming au gel cleanser
+✅ Omba niacinamide serum (inasaidia kudhibiti mafuta)
+✅ Tumia gel moisturizer (isiyo na mafuta)
+✅ Exfoliate mara 2 kwa wiki kwa salicylic acid
+✅ Tumia clay mask mara moja kwa wiki
+
+Je, ungependa kujua zaidi kuhusu routine kwa ngozi yenye mafuta?"""
+
+    elif "sunscreen" in message_lower or "spf" in message_lower or "jua" in message_lower:
+        return """Kuhusu kinga ya jua (sunscreen/SPF):
+✅ Tumia SPF 30+ kila siku, hata ukiwa ndani ya nyumba
+✅ Omba dakika 15-20 kabla ya kwenda nje
+✅ Tumia kiasi cha kutosha (1/2 kijiko kwa uso na shingo)
+✅ Rudia kila baada ya masaa 2-3 ukiwa nje
+✅ Chagua sunscreen inayofaa aina ya ngozi yako
+
+Je, unahitaji msaada wa kuchagua sunscreen?"""
+
+    elif "moisturizer" in message_lower or "cream" in message_lower:
+        return """Kuhusu moisturizer:
+✅ Kwa ngozi kavu - tumia cream nzito (rich moisturizer)
+✅ Kwa ngozi ya mafuta - tumia gel lightweight
+✅ Kwa ngozi nyeti - tumia fragrance-free moisturizer
+✅ Kwa combination - tumia lotion balancing
+✅ Omba mara mbili kwa siku (asubuhi na jioni)
+
+Je, ungependa kujua moisturizer gani inafaa kwa aina ya ngozi yako?"""
+
+    else:
+        return """Asante kwa swali lako kuhusu utunzaji wa ngozi! 🌟
+
+Ninaweza kukusaidia kuhusu:
+• Aina za ngozi (dry, oily, combination, sensitive, normal)
+• Matatizo ya ngozi (acne, rashes, dark spots, wrinkles)
+• Bidhaa za ngozi (cleansers, moisturizers, sunscreen, serums)
+• Kinga ya jua na UV protection
+• Routine sahihi ya kutunza ngozi
+
+Tafadhali uliza swali maalum zaidi ili nikupatie ushauri sahihi. Kwa mfano:
+- "Nina acne, nifanye nini?"
+- "Je, sunscreen ni muhimu wakati wa baridi?"
+- "Ni moisturizer gani inafaa kwa ngozi yangu kavu?"
+
+Je, una swali gani kuhusu ngozi yako leo? 💆‍♀️"""
+
+# ============================================
+# CHAT SERVICE (Skincare Focused)
+# ============================================
+
+class ChatService:
+    @staticmethod
+    async def get_openai_response(
+        user_message: str,
+        system_context: str,
+        conversation_history: Optional[List[Dict]] = None,
+        max_tokens: int = 200,
+        temperature: float = 0.4
+    ) -> Dict[str, Any]:
+        if not OPENAI_API_KEY:
+            return {
+                "success": False,
+                "response": get_skincare_fallback_response(user_message),
+                "error": "OpenAI API key missing",
+                "is_fallback": True
+            }
+        
+        try:
+            import openai
+            openai.api_key = OPENAI_API_KEY
+            
+            # STRONG SYSTEM PROMPT - SKINCARE ONLY
+            strong_system_prompt = """WEWE NI MTAALAMU WA NGOZI PEKEE. HURUHUSIWI KUJIBU MADA ZOZOTE ZISIZOHUSIANA NA NGOZI.
+
+UNARUHUSIWA KUJIBU:
+- Utunzaji wa ngozi (skincare routines, products, ingredients)
+- Matatizo ya ngozi (acne, rashes, pigmentation, wrinkles, dry/oily/sensitive skin)
+- Kinga ya jua (UV effects, sunscreen, sun damage, SPF)
+- Lishe inayosaidia afya ya ngozi
+- Bidhaa za ngozi na viungo vyake
+
+HURUHUSIWI KUJIBU:
+- Siasa, uchumi, historia, serikali
+- Watu maarufu (celebrities, musicians, actors, politicians) isipokuwa kama unazungumzia ngozi zao
+- Michezo, burudani, filamu, sinema
+- Uchumba, mapenzi, mahusiano, ndoa
+- Teknolojia, programming, mitandao, simu
+- Fedha, biashara, uwekezaji, pesa
+- Dini, kanisa, msikiti, sala
+- Habari za sasa au matukio ya hivi karibuni
+
+KWA SWALI LISILOHUSIANA NA NGOZI, JIBU KWA KISWAHILI: "Samahani, mimi ni mtaalamu wa ngozi pekee. Ninaweza kukusaidia tu kuhusu utunzaji wa ngozi, bidhaa za ngozi, kinga ya jua, na matatizo ya ngozi. Tafadhali uliza swali kuhusu ngozi yako. Je, una tatizo gani na ngozi yako leo?"
+
+WEKA MAJIBU MAFUPI (sentensi 2-4), YENYE MANUFAA, KWA LUGHA RAHISI (Kiswahili au Kingereza)."""
+            
+            messages = [{"role": "system", "content": strong_system_prompt}]
+            
+            if conversation_history:
+                # Only keep recent skin-related context
+                filtered_history = []
+                for msg in conversation_history[-6:]:
+                    content_lower = msg.get("content", "").lower()
+                    if any(keyword in content_lower for keyword in SKIN_KEYWORDS[:20]):
+                        filtered_history.append(msg)
+                messages.extend(filtered_history)
+            
+            messages.append({"role": "user", "content": user_message})
+            
+            response = await openai.ChatCompletion.acreate(
+                model="gpt-3.5-turbo",
+                messages=messages,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                presence_penalty=0.6,
+                frequency_penalty=0.5
+            )
+            
+            ai_response = response.choices[0].message.content
+            
+            # Post-filter the response
+            off_topic_check = ["politics", "election", "football", "soccer", "movie", "celebrity", "musician"]
+            if any(word in ai_response.lower() for word in off_topic_check):
+                return {
+                    "success": True,
+                    "response": get_skincare_fallback_response(user_message),
+                    "provider": "openai",
+                    "is_filtered": True
+                }
+            
+            return {
+                "success": True,
+                "response": ai_response,
+                "provider": "openai"
+            }
+        except Exception as e:
+            logger.error(f"OpenAI error: {e}")
+            return {
+                "success": False,
+                "response": get_skincare_fallback_response(user_message),
+                "error": str(e),
+                "is_fallback": True
+            }
+    
+    @staticmethod
+    async def get_gemini_response(
+        user_message: str,
+        system_context: str,
+        conversation_history: Optional[List[Dict]] = None,
+        max_tokens: int = 200,
+        temperature: float = 0.4
+    ) -> Dict[str, Any]:
+        if not GEMINI_API_KEY:
+            return {
+                "success": False,
+                "response": get_skincare_fallback_response(user_message),
+                "error": "Gemini API key missing",
+                "is_fallback": True
+            }
+        
+        try:
+            import google.generativeai as genai
+            genai.configure(api_key=GEMINI_API_KEY)
+            
+            model = genai.GenerativeModel('gemini-pro')
+            
+            strong_system_prompt = """WEWE NI MTAALAMU WA NGOZI PEKEE. Jibu tu maswali kuhusu utunzaji wa ngozi, bidhaa za ngozi, kinga ya jua, na matatizo ya ngozi.
+            USIJIBU maswali kuhusu: siasa, watu maarufu, michezo, burudani, mapenzi, teknolojia, fedha, au dini.
+            Kwa swali lisilohusiana, jibu: "Samahani, mimi ni mtaalamu wa ngozi pekee. Tafadhali uliza swali kuhusu ngozi yako.""
+            Weka majibu mafupi na yenye manufaa."""
+            
+            context_prompt = f"{strong_system_prompt}\n\n{system_context}\n\n"
+            
+            if conversation_history:
+                for msg in conversation_history[-6:]:
+                    role = "User" if msg["role"] == "user" else "Assistant"
+                    context_prompt += f"{role}: {msg['content']}\n"
+            
+            context_prompt += f"User: {user_message}\nAssistant:"
+            
+            response = model.generate_content(
+                context_prompt,
+                generation_config={
+                    "temperature": temperature,
+                    "max_output_tokens": max_tokens,
+                }
+            )
+            
+            ai_response = response.text
+            
+            # Post-filter
+            off_topic_check = ["politics", "election", "football", "movie", "celebrity"]
+            if any(word in ai_response.lower() for word in off_topic_check):
+                return {
+                    "success": True,
+                    "response": get_skincare_fallback_response(user_message),
+                    "provider": "gemini",
+                    "is_filtered": True
+                }
+            
+            return {
+                "success": True,
+                "response": ai_response,
+                "provider": "gemini"
+            }
+        except Exception as e:
+            logger.error(f"Gemini error: {e}")
+            return {
+                "success": False,
+                "response": get_skincare_fallback_response(user_message),
+                "error": str(e),
+                "is_fallback": True
+            }
+    
+    @classmethod
+    async def get_response(cls, user_message: str, system_context: str = None, **kwargs) -> Dict[str, Any]:
+        default_context = """Wewe ni mtaalamu wa ngozi. Toa ushauri wa vitendo kuhusu utunzaji wa ngozi. Jibu kwa Kiswahili au Kingereza. Weka majibu mafupi na yenye manufaa."""
+        
+        context = system_context or default_context
+        
+        if AI_PROVIDER == "openai" and OPENAI_API_KEY:
+            return await cls.get_openai_response(user_message, context, **kwargs)
+        elif AI_PROVIDER == "gemini" and GEMINI_API_KEY:
+            return await cls.get_gemini_response(user_message, context, **kwargs)
+        else:
+            return {
+                "success": True,
+                "response": get_skincare_fallback_response(user_message),
+                "provider": "fallback",
+                "is_fallback": True
+            }
+
+# ============================================
 # WEATHER CONFIGURATION (PAN-AFRICAN)
 # ============================================
 
@@ -555,11 +889,9 @@ def get_dynamic_weather(lat: float, lon: float):
         resp = requests.get(url, timeout=10).json()
         offset = resp.get('timezone', 0)
 
-        # Calculate Local Time for UV Accuracy
         local_tz = timezone(timedelta(seconds=offset))
         curr_hour = datetime.now(local_tz).hour
 
-        # UV Index Prediction (Global Standard for Africa)
         uv = 0.0
         if 11 <= curr_hour <= 14:
             uv = 11.0
@@ -933,125 +1265,6 @@ SKIN_CARE_DATA = {
 }
 
 # ============================================
-# CHAT SERVICE
-# ============================================
-
-class ChatService:
-    @staticmethod
-    async def get_openai_response(
-        user_message: str,
-        system_context: str,
-        conversation_history: Optional[List[Dict]] = None,
-        max_tokens: int = 300,
-        temperature: float = 0.7
-    ) -> Dict[str, Any]:
-        if not OPENAI_API_KEY:
-            return {
-                "success": False,
-                "response": "AI chat is not configured. Please contact support.",
-                "error": "OpenAI API key missing"
-            }
-        
-        try:
-            import openai
-            openai.api_key = OPENAI_API_KEY
-            
-            messages = [{"role": "system", "content": system_context}]
-            
-            if conversation_history:
-                messages.extend(conversation_history[-10:])
-            
-            messages.append({"role": "user", "content": user_message})
-            
-            response = await openai.ChatCompletion.acreate(
-                model="gpt-3.5-turbo",
-                messages=messages,
-                max_tokens=max_tokens,
-                temperature=temperature
-            )
-            
-            return {
-                "success": True,
-                "response": response.choices[0].message.content,
-                "provider": "openai"
-            }
-        except Exception as e:
-            logger.error(f"OpenAI error: {e}")
-            return {
-                "success": False,
-                "response": "Samahani, kuna tatizo la kiufundi. Jaribu tena baadaye.",
-                "error": str(e)
-            }
-    
-    @staticmethod
-    async def get_gemini_response(
-        user_message: str,
-        system_context: str,
-        conversation_history: Optional[List[Dict]] = None,
-        max_tokens: int = 300,
-        temperature: float = 0.7
-    ) -> Dict[str, Any]:
-        if not GEMINI_API_KEY:
-            return {
-                "success": False,
-                "response": "AI chat is not configured. Please contact support.",
-                "error": "Gemini API key missing"
-            }
-        
-        try:
-            import google.generativeai as genai
-            genai.configure(api_key=GEMINI_API_KEY)
-            
-            model = genai.GenerativeModel('gemini-pro')
-            
-            context_prompt = f"{system_context}\n\n"
-            
-            if conversation_history:
-                for msg in conversation_history[-10:]:
-                    role = "User" if msg["role"] == "user" else "Assistant"
-                    context_prompt += f"{role}: {msg['content']}\n"
-            
-            context_prompt += f"User: {user_message}\nAssistant:"
-            
-            response = model.generate_content(
-                context_prompt,
-                generation_config={
-                    "temperature": temperature,
-                    "max_output_tokens": max_tokens,
-                }
-            )
-            
-            return {
-                "success": True,
-                "response": response.text,
-                "provider": "gemini"
-            }
-        except Exception as e:
-            logger.error(f"Gemini error: {e}")
-            return {
-                "success": False,
-                "response": "Samahani, kuna tatizo la kiufundi. Jaribu tena baadaye.",
-                "error": str(e)
-            }
-    
-    @classmethod
-    async def get_response(cls, user_message: str, system_context: str = None, **kwargs) -> Dict[str, Any]:
-        default_context = "You are a professional African skincare advisor. Provide accurate, practical advice about skincare routines, products, and treatments. Be helpful and concise. Respond in Swahili or English as appropriate."
-        
-        context = system_context or default_context
-        
-        if AI_PROVIDER == "openai" and OPENAI_API_KEY:
-            return await cls.get_openai_response(user_message, context, **kwargs)
-        elif AI_PROVIDER == "gemini" and GEMINI_API_KEY:
-            return await cls.get_gemini_response(user_message, context, **kwargs)
-        else:
-            return {
-                "success": False,
-                "response": "AI chat service is not configured. Please set up OpenAI or Gemini API keys.",
-                "error": "No AI provider configured"
-            }
-
-# ============================================
 # HEALTH CHECK
 # ============================================
 
@@ -1060,7 +1273,7 @@ async def root():
     return {
         "status": "healthy",
         "app": "SkinGlow AI Master Production",
-        "version": "5.0.0",
+        "version": "5.1.0",
         "region": "Pan-African",
         "environment": os.getenv("ENVIRONMENT", "production"),
         "timestamp": datetime.now().isoformat()
@@ -1068,7 +1281,6 @@ async def root():
 
 @app.get("/health")
 async def health_check():
-    # Check database
     try:
         with get_db() as conn:
             conn.execute("SELECT 1").fetchone()
@@ -1078,7 +1290,7 @@ async def health_check():
     
     return {
         "status": "operational",
-        "version": "5.0.0",
+        "version": "5.1.0",
         "services": {
             "database": db_status,
             "mediapipe": MEDIAPIPE_AVAILABLE,
@@ -1410,13 +1622,7 @@ async def get_user_analyses(limit: int = 10, user_id: str = Depends(verify_token
             (user_id, limit)
         ).fetchall()
         
-        # Parse recommendations and oils from string to list
-        parsed_analyses = []
-        for a in analyses:
-            item = dict(a)
-            parsed_analyses.append(item)
-        
-        return {"success": True, "analyses": parsed_analyses}
+        return {"success": True, "analyses": [dict(a) for a in analyses]}
 
 @app.get("/analyses/{analysis_id}")
 async def get_analysis_detail(analysis_id: str, user_id: str = Depends(verify_token)):
@@ -1430,7 +1636,6 @@ async def get_analysis_detail(analysis_id: str, user_id: str = Depends(verify_to
             raise HTTPException(status_code=404, detail="Analysis not found")
         
         result = dict(analysis)
-        # Parse string fields to lists
         if result.get("characteristics"):
             result["characteristics"] = result["characteristics"].split("|")
         if result.get("recommendations"):
@@ -1484,7 +1689,6 @@ async def get_weather(lat: float, lon: float, skin_type: str = "normal", user_id
     weather = get_dynamic_weather(lat, lon)
     sunscreen = get_sunscreen_recommendation(weather.get("uv_index", 5), skin_type)
     
-    # UV level advice based on Pan-African conditions
     uv = weather.get("uv_index", 5)
     if uv >= 8:
         uv_level, advice = "Extreme", "Seek shade and wear SPF 50+. Avoid direct sun between 11 AM - 4 PM."
@@ -1517,13 +1721,38 @@ async def get_sunscreen_recommendation_endpoint(uv_index: float, skin_type: str 
     return {"success": True, **get_sunscreen_recommendation(uv_index, skin_type)}
 
 # ============================================
-# CHAT ENDPOINT
+# CHAT ENDPOINT (SKINCARE FOCUSED)
 # ============================================
 
 @app.post("/chat")
 async def chat_endpoint(request: ChatRequest, user_id: str = Depends(verify_token)):
     if not request.message or not request.message.strip():
         return {"success": False, "response": "Tafadhali andika swali lako."}
+    
+    # Check if message is skin-related
+    is_related, reason = is_skin_related(request.message)
+    
+    if not is_related:
+        return {
+            "success": True,
+            "response": """Samahani, mimi ni mtaalamu wa ngozi pekee. 💆‍♀️
+
+Ninaweza kukusaidia kuhusu:
+✅ Utunzaji wa ngozi (skincare routine)
+✅ Bidhaa za ngozi (cleansers, moisturizers, sunscreen)
+✅ Matatizo ya ngozi (acne, ngozi kavu, ngozi yenye mafuta)
+✅ Kinga ya jua na UV protection
+✅ Lishe inayosaidia ngozi
+
+Tafadhali uliza swali linalohusiana na ngozi yako. Kwa mfano:
+- "Nina acne, nifanye nini?"
+- "Je, sunscreen ni muhimu wakati wa baridi?"
+- "Ni moisturizer gani inafaa kwa ngozi yangu kavu?"
+
+Je, una swali gani kuhusu ngozi yako leo?""",
+            "is_filtered": True,
+            "reason": reason
+        }
     
     with get_db() as conn:
         latest_analysis = conn.execute(
@@ -1533,21 +1762,33 @@ async def chat_endpoint(request: ChatRequest, user_id: str = Depends(verify_toke
         
         user = conn.execute("SELECT name FROM users WHERE id = ?", (user_id,)).fetchone()
     
-    system_context = request.system_context
-    if not system_context:
-        system_context = "You are a professional African skincare advisor. Provide accurate, practical advice about skincare routines, products, and treatments. Be helpful and concise. Respond in Swahili or English as appropriate."
+    # Strict system context for skincare only
+    system_context = """Wewe ni mtaalamu wa ngozi pekee. Toa ushauri wa vitendo kuhusu utunzaji wa ngozi.
+    
+UNAPASWA KUJIBU:
+- Utunzaji wa ngozi (cleansing, moisturizing, exfoliating)
+- Bidhaa za ngozi (sunscreen, serums, creams, oils)
+- Matatizo ya ngozi (acne, rashes, pigmentation, wrinkles)
+- Kinga ya jua (SPF, UV protection)
+
+USIJIBU:
+- Siasa, watu maarufu, michezo, burudani, mapenzi, teknolojia, fedha, dini
+
+Kwa swali lisilohusiana na ngozi, jibu: "Samahani, mimi ni mtaalamu wa ngozi pekee. Ninaweza kukusaidia tu kuhusu utunzaji wa ngozi, bidhaa za ngozi, na kinga ya jua. Tafadhali uliza swali kuhusu ngozi yako."
+
+Weka majibu mafupi (sentensi 2-4) na yenye manufaa. Tumia Kiswahili au Kingereza."""
     
     if latest_analysis:
-        system_context += f"\n\nThe user has {latest_analysis['skin_type']} skin type. Provide advice tailored to this skin type."
+        system_context += f"\n\nMtumiaji ana ngozi ya aina ya {latest_analysis['skin_type']}. Toa ushauri unaolingana na aina hii ya ngozi."
     if user and user['name']:
-        system_context += f"\n\nThe user's name is {user['name']}. You can address them by name if appropriate."
+        system_context += f"\n\nJina la mtumiaji ni {user['name']}. Unaweza kumtaja kwa jina lake."
     
     result = await ChatService.get_response(
         user_message=request.message,
         system_context=system_context,
         conversation_history=request.conversation_history,
-        max_tokens=request.max_tokens,
-        temperature=request.temperature
+        max_tokens=request.max_tokens or 200,
+        temperature=request.temperature or 0.4
     )
     
     if result.get("success"):
@@ -1560,6 +1801,10 @@ async def chat_endpoint(request: ChatRequest, user_id: str = Depends(verify_toke
             )
             conn.commit()
     
+    # Ensure response always has a message
+    if not result.get("response"):
+        result["response"] = get_skincare_fallback_response(request.message)
+    
     return result
 
 @app.get("/chat/history")
@@ -1571,7 +1816,18 @@ async def get_chat_history(limit: int = 50, user_id: str = Depends(verify_token)
             (user_id, limit)
         ).fetchall()
         
-        return {"success": True, "history": [dict(h) for h in history]}
+        # Format for frontend (oldest first)
+        messages = []
+        for h in reversed(history):
+            messages.append({"role": "user", "content": h["user_message"]})
+            messages.append({"role": "assistant", "content": h["assistant_response"]})
+        
+        return {
+            "success": True,
+            "history": messages,
+            "raw_history": [dict(h) for h in history],
+            "total": len(history)
+        }
 
 @app.delete("/chat/history")
 async def clear_chat_history(user_id: str = Depends(verify_token)):
@@ -1580,6 +1836,33 @@ async def clear_chat_history(user_id: str = Depends(verify_token)):
         conn.commit()
     
     return {"success": True, "message": "Chat history cleared successfully"}
+
+@app.post("/chat/check-topic")
+async def check_topic_relevance(request: ChatRequest, user_id: str = Depends(verify_token)):
+    """Check if a question is skin-related before sending to AI"""
+    is_related, reason = is_skin_related(request.message)
+    
+    if is_related:
+        return {
+            "success": True,
+            "is_relevant": True,
+            "message": "Swali linalohusiana na ngozi. Ruhusiwa.",
+            "reason": reason
+        }
+    else:
+        return {
+            "success": True,
+            "is_relevant": False,
+            "message": "Swali haliuhusiani na ngozi. Tafadhali uliza kuhusu utunzaji wa ngozi.",
+            "reason": reason,
+            "suggestions": [
+                "Nina acne kwenye uso, nifanye nini?",
+                "Ni sunscreen gani inafaa kwa ngozi yangu yenye mafuta?",
+                "Je, ngozi yangu kavu inahitaji moisturizer mara ngapi kwa siku?",
+                "Nina dark spots, ni bidhaa gani napaswa kutumia?",
+                "Je, UV index 10 ni hatari kwa ngozi?"
+            ]
+        }
 
 # ============================================
 # PRODUCT ENDPOINTS
@@ -2454,7 +2737,7 @@ if __name__ == "__main__":
     host = os.getenv("HOST", "0.0.0.0")
     
     print("=" * 70)
-    print("🌟 SKINGLOW AI PAN-AFRICAN MASTER PRODUCTION v5.0")
+    print("🌟 SKINGLOW AI PAN-AFRICAN MASTER PRODUCTION v5.1")
     print("=" * 70)
     print(f"📍 Host: {host}")
     print(f"🔌 Port: {port}")
@@ -2464,6 +2747,7 @@ if __name__ == "__main__":
     print(f"🤖 Gemini: {'✅ Configured' if GEMINI_API_KEY else '❌ Not configured'}")
     print(f"💾 Database: SQLite with WAL mode")
     print(f"🌍 Region: Pan-African")
+    print(f"💬 Chat Mode: Skincare Only (Filtered)")
     print("=" * 70)
     print("🚀 Server is ready for production deployment!")
     print("=" * 70)
