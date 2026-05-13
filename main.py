@@ -30,6 +30,8 @@ import logging
 import time
 from functools import wraps
 import re
+import shutil
+from pathlib import Path
 
 # Load environment variables
 load_dotenv()
@@ -61,7 +63,7 @@ app = FastAPI(
 # CORS Configuration for production
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=os.getenv('ALLOWED_ORIGINS', 'http://localhost:3000,https://skinglow.com').split(','),
+    allow_origins=os.getenv('ALLOWED_ORIGINS', 'http://localhost:3000,http://localhost:8000,https://skinglow.com').split(','),
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
     allow_headers=["*"],
@@ -368,7 +370,7 @@ app = FastAPI(
 # Re-add CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=os.getenv('ALLOWED_ORIGINS', 'http://localhost:3000,https://skinglow.com').split(','),
+    allow_origins=os.getenv('ALLOWED_ORIGINS', 'http://localhost:3000,http://localhost:8000,https://skinglow.com').split(','),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -484,7 +486,7 @@ class ChatRequest(BaseModel):
     message: str
     system_context: Optional[str] = None
     conversation_history: Optional[List[Dict[str, str]]] = None
-    max_tokens: Optional[int] = 500
+    max_tokens: Optional[int] = 600
     temperature: Optional[float] = 0.7
 
 class ProductCreateRequest(BaseModel):
@@ -1279,6 +1281,168 @@ SKIN_CARE_DATA = {
 }
 
 # ============================================
+# PROFILE IMAGE CONFIGURATION
+# ============================================
+
+UPLOAD_DIR = "uploads/profiles"
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+# Create static directory for default avatar
+STATIC_DIR = "static"
+os.makedirs(STATIC_DIR, exist_ok=True)
+
+def create_default_avatar():
+    """Create default avatar image if not exists"""
+    avatar_path = os.path.join(STATIC_DIR, "default-avatar.png")
+    
+    if not os.path.exists(avatar_path):
+        try:
+            from PIL import Image, ImageDraw
+            # Create a simple default avatar
+            size = 200
+            img = Image.new('RGB', (size, size), color='#6C63FF')
+            draw = ImageDraw.Draw(img)
+            
+            # Draw circle for face
+            draw.ellipse((40, 40, 160, 160), fill='white')
+            
+            # Draw eyes
+            draw.ellipse((70, 90, 90, 110), fill='#6C63FF')
+            draw.ellipse((110, 90, 130, 110), fill='#6C63FF')
+            
+            # Draw smile
+            draw.arc((70, 120, 130, 150), start=0, end=180, fill='#6C63FF', width=5)
+            
+            img.save(avatar_path)
+            logger.info("✅ Created default avatar")
+        except Exception as e:
+            # Simple fallback
+            logger.warning(f"Could not create fancy avatar: {e}")
+            img = Image.new('RGB', (200, 200), color='#6C63FF')
+            img.save(avatar_path)
+            logger.info("✅ Created simple default avatar")
+
+create_default_avatar()
+
+# ============================================
+# PROFILE IMAGE ENDPOINTS (UPDATED FOR FLUTTER)
+# ============================================
+
+@app.post("/users/profile/image")
+async def upload_profile_image(file: UploadFile = File(...), user_id: str = Depends(verify_token)):
+    """Upload profile image - optimized for Flutter"""
+    if not file.content_type.startswith('image/'):
+        raise HTTPException(status_code=400, detail="File must be an image")
+    
+    contents = await file.read()
+    file_size = len(contents)
+    
+    if file_size > 5 * 1024 * 1024:  # 5MB
+        raise HTTPException(status_code=400, detail="File too large. Max 5MB")
+    
+    file_extension = os.path.splitext(file.filename)[1].lower()
+    if file_extension not in ['.jpg', '.jpeg', '.png', '.gif', '.webp']:
+        raise HTTPException(status_code=400, detail="Invalid file type")
+    
+    # Delete old profile image if exists
+    with get_db() as conn:
+        old = conn.execute("SELECT profile_image FROM users WHERE id = ?", (user_id,)).fetchone()
+        if old and old['profile_image']:
+            old_path = os.path.join(UPLOAD_DIR, os.path.basename(old['profile_image']))
+            if os.path.exists(old_path):
+                os.remove(old_path)
+                logger.info(f"Deleted old profile image for user {user_id}")
+    
+    # Save new image
+    filename = f"{user_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}{file_extension}"
+    filepath = os.path.join(UPLOAD_DIR, filename)
+    
+    with open(filepath, "wb") as buffer:
+        buffer.write(contents)
+    
+    # Store relative path
+    image_path = f"/uploads/profiles/{filename}"
+    base_url = os.getenv('BASE_URL', 'http://localhost:8000')
+    full_url = f"{base_url}{image_path}"
+    
+    # Update database
+    with get_db() as conn:
+        conn.execute(
+            "UPDATE users SET profile_image = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (image_path, user_id)
+        )
+        conn.commit()
+        logger.info(f"Profile image updated for user {user_id}: {image_path}")
+    
+    return {
+        "success": True,
+        "profile_image": full_url,
+        "image_path": image_path,
+        "message": "Profile image uploaded successfully"
+    }
+
+@app.get("/users/profile/image")
+async def get_profile_image(user_id: str = Depends(verify_token)):
+    """Get current user's profile image URL"""
+    with get_db() as conn:
+        user = conn.execute("SELECT profile_image FROM users WHERE id = ?", (user_id,)).fetchone()
+        
+        if not user or not user['profile_image']:
+            return {"success": True, "profile_image": None}
+        
+        base_url = os.getenv('BASE_URL', 'http://localhost:8000')
+        if user['profile_image'].startswith('http'):
+            image_url = user['profile_image']
+        else:
+            image_url = f"{base_url}{user['profile_image']}"
+        
+        return {"success": True, "profile_image": image_url}
+
+@app.delete("/users/profile/image")
+async def delete_profile_image(user_id: str = Depends(verify_token)):
+    """Delete profile image"""
+    with get_db() as conn:
+        user = conn.execute("SELECT profile_image FROM users WHERE id = ?", (user_id,)).fetchone()
+        
+        if user and user['profile_image']:
+            filepath = os.path.join(UPLOAD_DIR, os.path.basename(user['profile_image']))
+            if os.path.exists(filepath):
+                os.remove(filepath)
+                logger.info(f"Deleted profile image for user {user_id}")
+        
+        conn.execute("UPDATE users SET profile_image = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?", (user_id,))
+        conn.commit()
+    
+    return {"success": True, "message": "Profile image deleted successfully"}
+
+@app.get("/users/{target_user_id}/profile-image")
+async def get_other_profile_image(target_user_id: str):
+    """Get any user's profile image (public) - returns file directly"""
+    with get_db() as conn:
+        user = conn.execute("SELECT profile_image FROM users WHERE id = ?", (target_user_id,)).fetchone()
+        
+        if not user or not user['profile_image']:
+            # Return default avatar
+            default_path = os.path.join(STATIC_DIR, "default-avatar.png")
+            if os.path.exists(default_path):
+                return FileResponse(default_path, media_type="image/png")
+            else:
+                raise HTTPException(status_code=404, detail="No profile image")
+        
+        filename = os.path.basename(user['profile_image'])
+        filepath = os.path.join(UPLOAD_DIR, filename)
+        
+        if os.path.exists(filepath):
+            return FileResponse(filepath, media_type="image/jpeg")
+        else:
+            # Return default avatar if file missing
+            default_path = os.path.join(STATIC_DIR, "default-avatar.png")
+            if os.path.exists(default_path):
+                return FileResponse(default_path, media_type="image/png")
+            else:
+                raise HTTPException(status_code=404, detail="No profile image")
+
+# ============================================
 # HEALTH CHECK
 # ============================================
 
@@ -1316,7 +1480,7 @@ async def health_check():
     }
 
 # ============================================
-# AUTH ENDPOINTS
+# AUTH ENDPOINTS (UPDATED WITH PROFILE IMAGE)
 # ============================================
 
 @app.post("/auth/register")
@@ -1355,7 +1519,11 @@ async def register(request: RegisterRequest):
                 "email": request.email,
                 "name": request.name,
                 "role": request.role,
-                "is_approved": is_approved
+                "is_approved": is_approved,
+                "phone": request.phone,
+                "address": request.address,
+                "profile_image": None,
+                "created_at": datetime.now().isoformat()
             }
         }
     except Exception as e:
@@ -1370,7 +1538,7 @@ async def login(request: LoginRequest):
     try:
         with get_db() as conn:
             user = conn.execute(
-                "SELECT id, email, password_hash, name, role, is_approved, phone, address, created_at FROM users WHERE email = ?",
+                "SELECT id, email, password_hash, name, role, is_approved, phone, address, profile_image, created_at FROM users WHERE email = ?",
                 (request.email,)
             ).fetchone()
             
@@ -1392,6 +1560,14 @@ async def login(request: LoginRequest):
         access_token = create_access_token({"sub": user["email"], "user_id": user["id"], "role": user["role"]})
         refresh_token = create_refresh_token(user["id"])
         
+        # Convert profile image to full URL
+        profile_image = user["profile_image"]
+        base_url = os.getenv('BASE_URL', 'http://localhost:8000')
+        
+        if profile_image:
+            if not profile_image.startswith('http'):
+                profile_image = f"{base_url}{profile_image}"
+        
         return {
             "success": True,
             "message": "Login successful",
@@ -1406,7 +1582,8 @@ async def login(request: LoginRequest):
                 "is_approved": user["is_approved"],
                 "phone": user["phone"],
                 "address": user["address"],
-                "member_since": user["created_at"]
+                "profile_image": profile_image,
+                "created_at": user["created_at"]
             }
         }
     except Exception as e:
@@ -1456,7 +1633,8 @@ async def logout(user_id: str = Depends(verify_token)):
 async def get_current_user(user_id: str = Depends(verify_token)):
     with get_db() as conn:
         user = conn.execute(
-            """SELECT id, email, name, role, is_approved, created_at, updated_at, last_login, phone, address, profile_image 
+            """SELECT id, email, name, role, is_approved, created_at, updated_at, 
+                      last_login, phone, address, profile_image 
                FROM users WHERE id = ?""",
             (user_id,)
         ).fetchone()
@@ -1467,7 +1645,15 @@ async def get_current_user(user_id: str = Depends(verify_token)):
                 content={"success": False, "message": "User not found"}
             )
         
-        return {"success": True, "user": dict(user)}
+        user_dict = dict(user)
+        
+        # Convert relative path to full URL
+        if user_dict.get('profile_image'):
+            base_url = os.getenv('BASE_URL', 'http://localhost:8000')
+            if not user_dict['profile_image'].startswith('http'):
+                user_dict['profile_image'] = f"{base_url}{user_dict['profile_image']}"
+        
+        return {"success": True, "user": user_dict}
 
 @app.put("/users/me")
 async def update_profile(request: UpdateProfileRequest, user_id: str = Depends(verify_token)):
@@ -1498,7 +1684,13 @@ async def update_profile(request: UpdateProfileRequest, user_id: str = Depends(v
             (user_id,)
         ).fetchone()
         
-        return {"success": True, "user": dict(user), "message": "Profile updated successfully"}
+        user_dict = dict(user)
+        if user_dict.get('profile_image'):
+            base_url = os.getenv('BASE_URL', 'http://localhost:8000')
+            if not user_dict['profile_image'].startswith('http'):
+                user_dict['profile_image'] = f"{base_url}{user_dict['profile_image']}"
+        
+        return {"success": True, "user": user_dict, "message": "Profile updated successfully"}
 
 @app.post("/auth/change-password")
 async def change_password(request: ChangePasswordRequest, user_id: str = Depends(verify_token)):
@@ -1519,61 +1711,6 @@ async def change_password(request: ChangePasswordRequest, user_id: str = Depends
         conn.commit()
     
     return {"success": True, "message": "Password changed successfully"}
-
-# ============================================
-# PROFILE IMAGE ENDPOINTS
-# ============================================
-
-UPLOAD_DIR = "uploads/profiles"
-os.makedirs(UPLOAD_DIR, exist_ok=True)
-
-@app.post("/users/profile/image")
-async def upload_profile_image(file: UploadFile = File(...), user_id: str = Depends(verify_token)):
-    if not file.content_type.startswith('image/'):
-        raise HTTPException(status_code=400, detail="File must be an image")
-    
-    contents = await file.read()
-    file_size = len(contents)
-    
-    if file_size > 5 * 1024 * 1024:
-        raise HTTPException(status_code=400, detail="File too large. Max 5MB")
-    
-    file_extension = os.path.splitext(file.filename)[1].lower()
-    if file_extension not in ['.jpg', '.jpeg', '.png', '.gif', '.webp']:
-        raise HTTPException(status_code=400, detail="Invalid file type")
-    
-    filename = f"{user_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}{file_extension}"
-    filepath = os.path.join(UPLOAD_DIR, filename)
-    
-    with open(filepath, "wb") as buffer:
-        buffer.write(contents)
-    
-    image_url = f"/uploads/profiles/{filename}"
-    
-    with get_db() as conn:
-        conn.execute("UPDATE users SET profile_image = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", (image_url, user_id))
-        conn.commit()
-    
-    return {
-        "success": True,
-        "profile_image": image_url,
-        "message": "Profile image uploaded successfully"
-    }
-
-@app.delete("/users/profile/image")
-async def delete_profile_image(user_id: str = Depends(verify_token)):
-    with get_db() as conn:
-        user = conn.execute("SELECT profile_image FROM users WHERE id = ?", (user_id,)).fetchone()
-        
-        if user and user['profile_image']:
-            filepath = os.path.join(UPLOAD_DIR, os.path.basename(user['profile_image']))
-            if os.path.exists(filepath):
-                os.remove(filepath)
-        
-        conn.execute("UPDATE users SET profile_image = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?", (user_id,))
-        conn.commit()
-    
-    return {"success": True, "message": "Profile image deleted successfully"}
 
 # ============================================
 # SKIN ANALYSIS ENDPOINT
@@ -1636,7 +1773,12 @@ async def get_user_analyses(limit: int = 10, user_id: str = Depends(verify_token
             (user_id, limit)
         ).fetchall()
         
-        return {"success": True, "analyses": [dict(a) for a in analyses]}
+        parsed_analyses = []
+        for a in analyses:
+            item = dict(a)
+            parsed_analyses.append(item)
+        
+        return {"success": True, "analyses": parsed_analyses}
 
 @app.get("/analyses/{analysis_id}")
 async def get_analysis_detail(analysis_id: str, user_id: str = Depends(verify_token)):
@@ -1751,7 +1893,6 @@ async def chat_endpoint(request: ChatRequest, user_id: str = Depends(verify_toke
     is_related, confidence, language = is_skin_related(request.message)
     
     if not is_related:
-        # Return short, natural response in the same language
         return {
             "success": True,
             "response": get_off_topic_response(request.message),
@@ -1768,7 +1909,7 @@ async def chat_endpoint(request: ChatRequest, user_id: str = Depends(verify_toke
         
         user = conn.execute("SELECT name FROM users WHERE id = ?", (user_id,)).fetchone()
     
-    # Natural system context - not too restrictive
+    # Natural system context
     system_context = """You are a skincare expert. Give detailed, natural advice about skincare.
 
 You can respond at appropriate length. Give examples, reasons, and practical tips.
@@ -1800,7 +1941,6 @@ Respond in the same language as the user (Swahili or English)."""
         else:
             system_context += f"\n\nThe user's name is {user['name']}."
     
-    # Get AI response with higher limits
     result = await ChatService.get_response(
         user_message=request.message,
         system_context=system_context,
@@ -1809,7 +1949,6 @@ Respond in the same language as the user (Swahili or English)."""
         temperature=request.temperature or 0.7
     )
     
-    # Save to database
     if result.get("success"):
         with get_db() as conn:
             chat_id = str(uuid.uuid4())
@@ -1821,7 +1960,6 @@ Respond in the same language as the user (Swahili or English)."""
             )
             conn.commit()
     
-    # Ensure response exists
     if not result.get("response"):
         result["response"] = get_skincare_fallback_response(request.message)
     
@@ -1839,7 +1977,6 @@ async def get_chat_history(limit: int = 50, user_id: str = Depends(verify_token)
             (user_id, limit)
         ).fetchall()
         
-        # Format for chat display
         messages = []
         for h in history:
             messages.append({"role": "user", "content": h["user_message"], "timestamp": h["created_at"]})
@@ -1877,7 +2014,6 @@ async def delete_chat_message(message_id: str, user_id: str = Depends(verify_tok
 
 @app.post("/chat/check-topic")
 async def check_topic_relevance(request: ChatRequest, user_id: str = Depends(verify_token)):
-    """Check if a question is skin-related before sending to AI"""
     is_related, confidence, language = is_skin_related(request.message)
     
     if is_related:
@@ -2006,7 +2142,6 @@ async def get_categories():
 
 @app.get("/products/recommend")
 async def recommend_products(lat: float, lon: float, skin_type: str):
-    """Recommend products based on weather and skin type"""
     weather = get_dynamic_weather(lat, lon)
     
     with get_db() as conn:
@@ -2071,17 +2206,18 @@ async def get_product_detail(product_id: str):
         }
 
 # ============================================
-# VENDOR ENDPOINTS (Continued in next message due to length)
+# VENDOR ENDPOINTS (Keep existing)
 # ============================================
 
-# ... (Vendor endpoints remain the same as previous version)
+# ... (Vendor endpoints remain the same as before)
 
 # ============================================
-# STATIC FILES (for local uploads)
+# STATIC FILES
 # ============================================
 
-if os.path.exists("uploads"):
-    app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
+# Mount directories for static files
+app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # ============================================
 # RUN SERVER
@@ -2103,6 +2239,7 @@ if __name__ == "__main__":
     print(f"💾 Database: SQLite with WAL mode")
     print(f"🌍 Region: Pan-African")
     print(f"💬 Chat Mode: Bilingual - Skincare Focused")
+    print(f"📸 Profile Images: Enabled (saved to uploads/profiles/)")
     print("=" * 70)
     print("🚀 Server is ready for production deployment!")
     print("=" * 70)
