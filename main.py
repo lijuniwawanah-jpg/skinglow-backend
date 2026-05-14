@@ -835,7 +835,7 @@ async def upload_profile_image(file: UploadFile = File(...), user_id: str = Depe
         buffer.write(contents)
     
     image_path = f"/uploads/profiles/{filename}"
-    base_url = os.getenv('BASE_URL', 'http://localhost:8000')
+    base_url = os.getenv('BASE_URL', 'https://skinglow-backend-production.up.railway.app')
     full_url = f"{base_url}{image_path}"
     
     async with get_db() as conn:
@@ -858,7 +858,7 @@ async def get_profile_image(user_id: str = Depends(verify_token)):
         if not user or not user['profile_image']:
             return {"success": True, "profile_image": None}
         
-        base_url = os.getenv('BASE_URL', 'http://localhost:8000')
+        base_url = os.getenv('BASE_URL', 'https://skinglow-backend-production.up.railway.app')
         if user['profile_image'].startswith('http'):
             image_url = user['profile_image']
         else:
@@ -1017,7 +1017,7 @@ async def login(request: LoginRequest):
         refresh_token = create_refresh_token(user["id"])
         
         profile_image = user.get("profile_image")
-        base_url = os.getenv('BASE_URL', 'http://localhost:8000')
+        base_url = os.getenv('BASE_URL', 'https://skinglow-backend-production.up.railway.app')
         if profile_image and not profile_image.startswith('http'):
             profile_image = f"{base_url}{profile_image}"
         
@@ -1091,7 +1091,7 @@ async def get_current_user(user_id: str = Depends(verify_token)):
         
         user_dict = dict(user)
         if user_dict.get('profile_image'):
-            base_url = os.getenv('BASE_URL', 'http://localhost:8000')
+            base_url = os.getenv('BASE_URL', 'https://skinglow-backend-production.up.railway.app')
             if not user_dict['profile_image'].startswith('http'):
                 user_dict['profile_image'] = f"{base_url}{user_dict['profile_image']}"
         
@@ -1144,7 +1144,7 @@ async def update_profile(request: UpdateProfileRequest, user_id: str = Depends(v
         
         user_dict = dict(user)
         if user_dict.get('profile_image'):
-            base_url = os.getenv('BASE_URL', 'http://localhost:8000')
+            base_url = os.getenv('BASE_URL', 'https://skinglow-backend-production.up.railway.app')
             if not user_dict['profile_image'].startswith('http'):
                 user_dict['profile_image'] = f"{base_url}{user_dict['profile_image']}"
         
