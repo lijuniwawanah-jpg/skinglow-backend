@@ -36,7 +36,7 @@ from pathlib import Path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # Import database module
-from database import get_db, init_db, migrate_data, hash_password, verify_password
+from app.database import get_db, init_db, migrate_data, hash_password, verify_password
 
 # Load environment variables
 load_dotenv()
