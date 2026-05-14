@@ -39,7 +39,7 @@ load_dotenv()
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # Import database module
-from database import get_db, init_db, migrate_data, hash_password, verify_password
+from database import get_db, init_db, migrate_data
 
 # ============================================
 # LOGGING CONFIGURATION
@@ -814,7 +814,7 @@ async def register(request: RegisterRequest):
                 return JSONResponse(status_code=400, content={"success": False, "message": "Email already registered"})
             
             user_id = str(uuid.uuid4())
-            password_hash_str = hash_password(request.password)
+            password_hash_str = bcrypt.hashpw(request.password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
             is_approved = 1 if request.role == 'customer' else 0
             
             await conn.execute(
@@ -845,7 +845,7 @@ async def login(request: LoginRequest):
                 request.email
             )
             
-            if not user or not verify_password(request.password, user["password_hash"]):
+            if not user or not bcrypt.checkpw(request.password.encode('utf-8'), user["password_hash"].encode('utf-8')):
                 return JSONResponse(status_code=401, content={"success": False, "message": "Invalid email or password"})
             
             await conn.execute("UPDATE users SET last_login = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = $1", user["id"])
