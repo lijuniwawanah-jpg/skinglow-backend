@@ -4,6 +4,8 @@
 # Optimized by Ashraf Hamis Athumani (Wawanah)
 # ============================================
 
+import json
+from fastapi import Form 
 from fastapi import FastAPI, File, UploadFile, HTTPException, Depends, Request, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
@@ -1545,6 +1547,169 @@ async def get_user_stats(user_id: str = Depends(verify_token)):
             "average_confidence": sum(a["confidence"] for a in analyses) / len(analyses)
         }
 
+
+@app.post("/analyze-with-questionnaire")
+async def analyze_with_questionnaire(
+    file: UploadFile = File(...),
+    questionnaire: str = Form(...),  # Important: use Form, not Body
+    user_id: str = Depends(verify_token)
+):
+    """Enhanced analysis that combines AI scan with user questionnaire"""
+    import json
+    
+    if not file.content_type.startswith('image/'):
+        raise HTTPException(status_code=400, detail="File must be an image")
+    
+    try:
+        # Parse questionnaire JSON string
+        questionnaire_data = json.loads(questionnaire)
+        
+        # 1. Perform AI analysis on image
+        contents = await file.read()
+        ai_analysis = analyze_with_consistency(contents)
+        ai_skin_type = ai_analysis.get("skin_type", "normal")
+        ai_confidence = ai_analysis.get("confidence", 0.75)
+        
+        # 2. Calculate skin type from questionnaire
+        from models.skin_questionnaire import QuestionnaireRequest
+        from skin_analyzer import calculate_skin_type_from_questionnaire
+        
+        # Convert dict to QuestionnaireRequest object
+        q_request = QuestionnaireRequest(
+            self_assessed_skin_type=questionnaire_data.get("self_assessed_skin_type", "normal"),
+            skin_concerns=questionnaire_data.get("skin_concerns", []),
+            oiliness=questionnaire_data.get("oiliness", 3),
+            dryness=questionnaire_data.get("dryness", 3),
+            sensitivity=questionnaire_data.get("sensitivity", 3),
+            acne_frequency=questionnaire_data.get("acne_frequency", 3),
+            redness=questionnaire_data.get("redness", 3),
+            pores_size=questionnaire_data.get("pores_size", 3),
+            texture=questionnaire_data.get("texture", 3),
+            uses_sunscreen=questionnaire_data.get("uses_sunscreen", False),
+            age=questionnaire_data.get("age"),
+            gender=questionnaire_data.get("gender"),
+            cleanser_type=questionnaire_data.get("cleanser_type"),
+            moisturizer_type=questionnaire_data.get("moisturizer_type"),
+            water_intake=questionnaire_data.get("water_intake"),
+            sleep_hours=questionnaire_data.get("sleep_hours"),
+            diet=questionnaire_data.get("diet")
+        )
+        
+        questionnaire_result = calculate_skin_type_from_questionnaire(q_request)
+        q_skin_type = questionnaire_result["calculated_skin_type"]
+        q_confidence = questionnaire_result["confidence"]
+        matching = questionnaire_result["matching_percentage"]
+        
+        # 3. Combine results (weighted: 60% AI, 40% Questionnaire)
+        type_scores = {"dry": 0, "oily": 0, "combination": 0, "sensitive": 0, "normal": 0}
+        type_scores[ai_skin_type] += 0.6 * ai_confidence
+        type_scores[q_skin_type] += 0.4 * q_confidence
+        
+        final_skin_type = max(type_scores, key=type_scores.get)
+        final_confidence = (ai_confidence * 0.6 + q_confidence * 0.4) * (0.7 + matching * 0.3)
+        final_confidence = min(0.95, final_confidence)
+        
+        # 4. Get skin care data
+        skin_data = SKIN_CARE_DATA.get(final_skin_type, SKIN_CARE_DATA["normal"])
+        
+        # Add specific recommendations based on user's concerns
+        personalized_recommendations = list(skin_data["recommendations"])
+        for concern in questionnaire_data.get("skin_concerns", []):
+            if concern == "acne" and "salicylic" not in str(personalized_recommendations).lower():
+                personalized_recommendations.append("Use salicylic acid or benzoyl peroxide for acne")
+            elif concern == "dark_spots":
+                personalized_recommendations.append("Apply vitamin C serum in the morning")
+            elif concern == "wrinkles":
+                personalized_recommendations.append("Use retinol at night (start with low concentration)")
+            elif concern == "redness":
+                personalized_recommendations.append("Use calming ingredients like centella or niacinamide")
+            elif concern == "large_pores":
+                personalized_recommendations.append("Use niacinamide to help minimize pores")
+            elif concern == "dullness":
+                personalized_recommendations.append("Use vitamin C or glycolic acid for brightness")
+        
+        # 5. Save to database
+        analysis_id = str(uuid.uuid4())
+        questionnaire_id = str(uuid.uuid4())
+        
+        async with get_db() as conn:
+            # Save analysis
+            if hasattr(conn, 'execute'):
+                await conn.execute(
+                    """INSERT INTO analyses (id, user_id, skin_type, skin_name, confidence, characteristics, recommendations, recommended_oils, method) 
+                       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)""",
+                    analysis_id, user_id, final_skin_type, skin_data["name"], final_confidence,
+                    "|".join(skin_data["characteristics"]),
+                    "|".join(personalized_recommendations),
+                    "|".join(skin_data["oils"]),
+                    "AI + Questionnaire Analysis"
+                )
+            else:
+                await conn.execute(
+                    """INSERT INTO analyses (id, user_id, skin_type, skin_name, confidence, characteristics, recommendations, recommended_oils, method) 
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    analysis_id, user_id, final_skin_type, skin_data["name"], final_confidence,
+                    "|".join(skin_data["characteristics"]),
+                    "|".join(personalized_recommendations),
+                    "|".join(skin_data["oils"]),
+                    "AI + Questionnaire Analysis"
+                )
+            
+            # Save questionnaire
+            if hasattr(conn, 'execute'):
+                await conn.execute(
+                    """INSERT INTO skin_questionnaires 
+                       (id, user_id, self_assessed_skin_type, calculated_skin_type, confidence, matching_percentage,
+                        oiliness, dryness, sensitivity, acne_frequency, redness, pores_size, texture, uses_sunscreen)
+                       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)""",
+                    questionnaire_id, user_id, questionnaire_data.get("self_assessed_skin_type", "normal"),
+                    q_skin_type, q_confidence, matching,
+                    questionnaire_data.get("oiliness", 3), questionnaire_data.get("dryness", 3),
+                    questionnaire_data.get("sensitivity", 3), questionnaire_data.get("acne_frequency", 3),
+                    questionnaire_data.get("redness", 3), questionnaire_data.get("pores_size", 3),
+                    questionnaire_data.get("texture", 3), 1 if questionnaire_data.get("uses_sunscreen", False) else 0
+                )
+            else:
+                await conn.execute(
+                    """INSERT INTO skin_questionnaires 
+                       (id, user_id, self_assessed_skin_type, calculated_skin_type, confidence, matching_percentage,
+                        oiliness, dryness, sensitivity, acne_frequency, redness, pores_size, texture, uses_sunscreen)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    questionnaire_id, user_id, questionnaire_data.get("self_assessed_skin_type", "normal"),
+                    q_skin_type, q_confidence, matching,
+                    questionnaire_data.get("oiliness", 3), questionnaire_data.get("dryness", 3),
+                    questionnaire_data.get("sensitivity", 3), questionnaire_data.get("acne_frequency", 3),
+                    questionnaire_data.get("redness", 3), questionnaire_data.get("pores_size", 3),
+                    questionnaire_data.get("texture", 3), 1 if questionnaire_data.get("uses_sunscreen", False) else 0
+                )
+        
+        return {
+            "success": True,
+            "analysis_id": analysis_id,
+            "questionnaire_id": questionnaire_id,
+            "skin_type": final_skin_type,
+            "skin_name": skin_data["name"],
+            "confidence": final_confidence,
+            "ai_analysis": {
+                "skin_type": ai_skin_type,
+                "confidence": ai_confidence
+            },
+            "questionnaire_analysis": {
+                "calculated_skin_type": q_skin_type,
+                "confidence": q_confidence,
+                "matching_percentage": matching
+            },
+            "characteristics": skin_data["characteristics"],
+            "recommendations": personalized_recommendations,
+            "recommended_oils": skin_data["oils"],
+            "method": "Hybrid Analysis (AI + Questionnaire)",
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"Questionnaire analysis error: {e}")
+        raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
+        
 # ============================================
 # WEATHER ENDPOINTS
 # ============================================
