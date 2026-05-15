@@ -46,6 +46,7 @@ if not DATABASE_URL:
     async def init_db():
         conn = await aiosqlite.connect(SQLITE_DB_FILE)
         
+        # Users table
         await conn.execute('''
             CREATE TABLE IF NOT EXISTS users (
                 id TEXT PRIMARY KEY,
@@ -67,6 +68,7 @@ if not DATABASE_URL:
             )
         ''')
         
+        # Analyses table
         await conn.execute('''
             CREATE TABLE IF NOT EXISTS analyses (
                 id TEXT PRIMARY KEY,
@@ -85,6 +87,7 @@ if not DATABASE_URL:
             )
         ''')
         
+        # Chat history table
         await conn.execute('''
             CREATE TABLE IF NOT EXISTS chat_history (
                 id TEXT PRIMARY KEY,
@@ -95,6 +98,29 @@ if not DATABASE_URL:
                 skin_context TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (user_id) REFERENCES users(id)
+            )
+        ''')
+        
+        # Skin questionnaires table
+        await conn.execute('''
+            CREATE TABLE IF NOT EXISTS skin_questionnaires (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                self_assessed_skin_type TEXT NOT NULL,
+                calculated_skin_type TEXT NOT NULL,
+                confidence REAL NOT NULL,
+                matching_percentage REAL NOT NULL,
+                oiliness INTEGER,
+                dryness INTEGER,
+                sensitivity INTEGER,
+                acne_frequency INTEGER,
+                redness INTEGER,
+                pores_size INTEGER,
+                texture INTEGER,
+                uses_sunscreen INTEGER DEFAULT 0,
+                questionnaire_data TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
             )
         ''')
         
@@ -284,30 +310,30 @@ else:
                     UNIQUE(user_id, product_id)
                 )
             ''')
-
-            # Add to init_db() function
-# QUESTIONNAIRE TABLE
-conn.execute('''
-    CREATE TABLE IF NOT EXISTS skin_questionnaires (
-        id TEXT PRIMARY KEY,
-        user_id TEXT NOT NULL,
-        self_assessed_skin_type TEXT NOT NULL,
-        calculated_skin_type TEXT NOT NULL,
-        confidence REAL NOT NULL,
-        matching_percentage REAL NOT NULL,
-        oiliness INTEGER,
-        dryness INTEGER,
-        sensitivity INTEGER,
-        acne_frequency INTEGER,
-        redness INTEGER,
-        pores_size INTEGER,
-        texture INTEGER,
-        uses_sunscreen INTEGER DEFAULT 0,
-        questionnaire_data TEXT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-    )
-''')
+            
+            # SKIN QUESTIONNAIRES TABLE (FIXED - Now properly indented)
+            await conn.execute('''
+                CREATE TABLE IF NOT EXISTS skin_questionnaires (
+                    id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    self_assessed_skin_type TEXT NOT NULL,
+                    calculated_skin_type TEXT NOT NULL,
+                    confidence REAL NOT NULL,
+                    matching_percentage REAL NOT NULL,
+                    oiliness INTEGER,
+                    dryness INTEGER,
+                    sensitivity INTEGER,
+                    acne_frequency INTEGER,
+                    redness INTEGER,
+                    pores_size INTEGER,
+                    texture INTEGER,
+                    uses_sunscreen INTEGER DEFAULT 0,
+                    questionnaire_data TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+                )
+            ''')
+            
             # NOTIFICATIONS TABLE
             await conn.execute('''
                 CREATE TABLE IF NOT EXISTS notifications (
