@@ -1469,6 +1469,55 @@ async def analyze_skin(file: UploadFile = File(...), user_id: str = Depends(veri
         raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
 
 # ============================================
+# FIXED: GET ANALYSES ENDPOINT (Proper format for Flutter)
+# ============================================
+
+@app.get("/analyses")
+async def get_user_analyses(limit: int = 50, user_id: str = Depends(verify_token)):
+    async with get_db() as conn:
+        if hasattr(conn, 'fetch'):
+            analyses = await conn.fetch(
+                """SELECT id, skin_type, skin_name, confidence, method, created_at 
+                   FROM analyses WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2""",
+                user_id, limit
+            )
+        else:
+            cursor = await conn.execute(
+                """SELECT id, skin_type, skin_name, confidence, method, created_at 
+                   FROM analyses WHERE user_id = ? ORDER BY created_at DESC LIMIT ?""",
+                (user_id, limit)
+            )
+            analyses = await cursor.fetchall()
+        
+        # Convert to list of dictionaries with proper format for Flutter
+        result = []
+        for a in analyses:
+            # Handle datetime conversion for JSON serialization
+            created_at = a["created_at"]
+            if hasattr(created_at, 'isoformat'):
+                created_at_str = created_at.isoformat()
+            else:
+                created_at_str = str(created_at)
+            
+            result.append({
+                "id": a["id"],
+                "skin_type": a["skin_type"],
+                "skin_name": a["skin_name"],
+                "confidence": float(a["confidence"]) if a["confidence"] else 0.0,
+                "method": a["method"] if a["method"] else "AI Analysis",
+                "created_at": created_at_str,
+                "characteristics": [],  # Empty for history list view
+                "recommendations": [],   # Empty for history list view
+                "recommended_oils": []   # Empty for history list view
+            })
+        
+        return {
+            "success": True,
+            "analyses": result,
+            "total": len(result)
+        }
+
+# ============================================
 # HYBRID ANALYSIS ENDPOINT (AI + Questionnaire)
 # ============================================
 
