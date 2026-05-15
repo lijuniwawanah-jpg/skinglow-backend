@@ -284,7 +284,30 @@ else:
                     UNIQUE(user_id, product_id)
                 )
             ''')
-            
+
+            # Add to init_db() function
+# QUESTIONNAIRE TABLE
+conn.execute('''
+    CREATE TABLE IF NOT EXISTS skin_questionnaires (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        self_assessed_skin_type TEXT NOT NULL,
+        calculated_skin_type TEXT NOT NULL,
+        confidence REAL NOT NULL,
+        matching_percentage REAL NOT NULL,
+        oiliness INTEGER,
+        dryness INTEGER,
+        sensitivity INTEGER,
+        acne_frequency INTEGER,
+        redness INTEGER,
+        pores_size INTEGER,
+        texture INTEGER,
+        uses_sunscreen INTEGER DEFAULT 0,
+        questionnaire_data TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    )
+''')
             # NOTIFICATIONS TABLE
             await conn.execute('''
                 CREATE TABLE IF NOT EXISTS notifications (
