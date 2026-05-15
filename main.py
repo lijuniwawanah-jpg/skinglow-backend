@@ -38,7 +38,7 @@ from pathlib import Path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # Import database module
-from app.database import get_db, init_db, migrate_data, hash_password, verify_password
+from database import get_db, init_db, migrate_data, hash_password, verify_password
 
 # Load environment variables
 load_dotenv()
@@ -703,7 +703,7 @@ def get_sunscreen_recommendation(uv_index: float, skin_type: str) -> Dict:
     }
 
 # ============================================
-# IMAGE PROCESSING (Simplified)
+# IMAGE PROCESSING
 # ============================================
 
 def standardize_image_lighting(image_bytes: bytes) -> np.ndarray:
@@ -721,7 +721,7 @@ def standardize_image_lighting(image_bytes: bytes) -> np.ndarray:
         return np.array(image.resize((500, 500)))
 
 # ============================================
-# SKIN ANALYSIS FUNCTIONS (FIXED - NO BIAS)
+# SKIN ANALYSIS FUNCTIONS (IMPROVED - NO BIAS)
 # ============================================
 
 SKIN_CARE_DATA = {
@@ -882,7 +882,7 @@ def analyze_with_fallback(image_bytes: bytes) -> Dict:
         # Initialize all scores to 0 - NO DEFAULT BIAS
         scores = {"dry": 0, "oily": 0, "combination": 0, "sensitive": 0, "normal": 0}
         
-        # Texture variance scoring (No default bias)
+        # Texture variance scoring
         if texture_var > 3800:
             scores["oily"] += 5
             scores["combination"] += 2
@@ -906,7 +906,7 @@ def analyze_with_fallback(image_bytes: bytes) -> Dict:
             scores["dry"] += 4
             scores["sensitive"] += 2
         
-        # Brightness scoring (No default bias)
+        # Brightness scoring
         if avg_brightness > 220:
             scores["dry"] += 4
             scores["sensitive"] += 3
@@ -933,28 +933,23 @@ def analyze_with_fallback(image_bytes: bytes) -> Dict:
         max_score = max(scores.values())
         candidates = [k for k, v in scores.items() if v == max_score]
         
-        # Handle ties - use more specific logic
         if len(candidates) > 1:
-            # If tie between normal and something else, check texture_var
             if "normal" in candidates:
                 if texture_var > 2000:
                     return {"skin_type": "combination", "confidence": 0.72, "method": "Color Analysis"}
                 elif texture_var < 1200:
                     return {"skin_type": "dry", "confidence": 0.70, "method": "Color Analysis"}
             
-            # If tie between oily and combination
             if "oily" in candidates and "combination" in candidates:
                 if texture_var > 3000:
                     return {"skin_type": "oily", "confidence": 0.73, "method": "Color Analysis"}
                 else:
                     return {"skin_type": "combination", "confidence": 0.71, "method": "Color Analysis"}
             
-            # Default for other ties
             skin_type = candidates[0]
         else:
             skin_type = candidates[0]
         
-        # Calculate confidence based on score spread
         sorted_scores = sorted(scores.values(), reverse=True)
         score_spread = sorted_scores[0] - sorted_scores[1] if len(sorted_scores) > 1 else sorted_scores[0]
         confidence = 0.65 + (score_spread / 20) * 0.25
@@ -978,23 +973,19 @@ def analyze_with_consistency(image_bytes: bytes) -> Dict:
     """Run multiple analyses and return consistent result"""
     results = []
     
-    # Try MediaPipe if available
     result1 = analyze_with_mediapipe(image_bytes)
     if result1:
         results.append(result1)
     
-    # Always run fallback for comparison
     fallback_result = analyze_with_fallback(image_bytes)
     results.append(fallback_result)
     
-    # Get all skin types
     skin_types = [r["skin_type"] for r in results]
     confidences = [r["confidence"] for r in results]
     
     counts = Counter(skin_types)
     most_common = counts.most_common(1)[0]
     
-    # If all results agree OR majority vote
     if len(set(skin_types)) == 1 or most_common[1] >= 2:
         avg_confidence = sum(confidences) / len(confidences)
         return {
@@ -1003,14 +994,12 @@ def analyze_with_consistency(image_bytes: bytes) -> Dict:
             "method": "Consensus Analysis"
         }
     
-    # If disagreement, use weighted decision based on texture_var
     try:
         import cv2
         std_img = standardize_image_lighting(image_bytes)
         gray = cv2.cvtColor(std_img, cv2.COLOR_RGB2GRAY)
         texture_var = np.var(gray)
         
-        # Decision tree based on texture
         if texture_var > 3500:
             return {"skin_type": "oily", "confidence": 0.72, "method": "Texture Analysis"}
         elif texture_var < 1500:
@@ -1424,7 +1413,7 @@ async def change_password(request: ChangePasswordRequest, user_id: str = Depends
     return {"success": True, "message": "Password changed successfully"}
 
 # ============================================
-# SKIN ANALYSIS ENDPOINT
+# SKIN ANALYSIS ENDPOINT (Standard)
 # ============================================
 
 @app.post("/analyze")
@@ -1479,83 +1468,20 @@ async def analyze_skin(file: UploadFile = File(...), user_id: str = Depends(veri
         logger.error(f"Analysis error: {e}")
         raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
 
-@app.get("/analyses")
-async def get_user_analyses(limit: int = 10, user_id: str = Depends(verify_token)):
-    async with get_db() as conn:
-        if hasattr(conn, 'fetch'):
-            analyses = await conn.fetch(
-                "SELECT id, skin_type, skin_name, confidence, method, created_at FROM analyses WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2",
-                user_id, limit
-            )
-        else:
-            cursor = await conn.execute(
-                "SELECT id, skin_type, skin_name, confidence, method, created_at FROM analyses WHERE user_id = ? ORDER BY created_at DESC LIMIT ?",
-                (user_id, limit)
-            )
-            analyses = await cursor.fetchall()
-        return {"success": True, "analyses": [dict(a) for a in analyses]}
-
-@app.get("/analyses/{analysis_id}")
-async def get_analysis_detail(analysis_id: str, user_id: str = Depends(verify_token)):
-    async with get_db() as conn:
-        if hasattr(conn, 'fetchrow'):
-            analysis = await conn.fetchrow("SELECT * FROM analyses WHERE id = $1 AND user_id = $2", analysis_id, user_id)
-        else:
-            cursor = await conn.execute("SELECT * FROM analyses WHERE id = ? AND user_id = ?", (analysis_id, user_id))
-            analysis = await cursor.fetchone()
-        
-        if not analysis:
-            raise HTTPException(status_code=404, detail="Analysis not found")
-        
-        result = dict(analysis)
-        if result.get("characteristics"):
-            result["characteristics"] = result["characteristics"].split("|")
-        if result.get("recommendations"):
-            result["recommendations"] = result["recommendations"].split("|")
-        if result.get("recommended_oils"):
-            result["recommended_oils"] = result["recommended_oils"].split("|")
-        
-        return {"success": True, "analysis": result}
-
-@app.get("/users/stats")
-async def get_user_stats(user_id: str = Depends(verify_token)):
-    async with get_db() as conn:
-        if hasattr(conn, 'fetch'):
-            analyses = await conn.fetch("SELECT skin_type, confidence, created_at FROM analyses WHERE user_id = $1 ORDER BY created_at DESC", user_id)
-        else:
-            cursor = await conn.execute("SELECT skin_type, confidence, created_at FROM analyses WHERE user_id = ? ORDER BY created_at DESC", (user_id,))
-            analyses = await cursor.fetchall()
-        
-        if not analyses:
-            return {"success": True, "total_analyses": 0, "skin_health_score": 85}
-        
-        skin_type_counts = {}
-        for a in analyses:
-            skin_type_counts[a["skin_type"]] = skin_type_counts.get(a["skin_type"], 0) + 1
-        
-        latest = analyses[0]
-        scores = {"normal": 92, "combination": 82, "dry": 78, "oily": 75, "sensitive": 70}
-        base_score = scores.get(latest["skin_type"], 85)
-        skin_health_score = int(base_score * (latest["confidence"] * 0.3 + 0.7))
-        
-        return {
-            "success": True,
-            "total_analyses": len(analyses),
-            "current_skin_type": latest["skin_type"],
-            "skin_health_score": skin_health_score,
-            "skin_type_trends": skin_type_counts,
-            "average_confidence": sum(a["confidence"] for a in analyses) / len(analyses)
-        }
-
+# ============================================
+# HYBRID ANALYSIS ENDPOINT (AI + Questionnaire)
+# ============================================
 
 @app.post("/analyze-with-questionnaire")
 async def analyze_with_questionnaire(
     file: UploadFile = File(...),
-    questionnaire: str = Form(...),  # Important: use Form, not Body
+    questionnaire: str = Form(...),
     user_id: str = Depends(verify_token)
 ):
-    """Enhanced analysis that combines AI scan with user questionnaire"""
+    """Enhanced analysis that combines AI scan with user questionnaire - HIGHER ACCURACY"""
     import json
+    from models.skin_questionnaire import QuestionnaireRequest
+    from skin_analyzer import calculate_skin_type_from_questionnaire
     
     if not file.content_type.startswith('image/'):
         raise HTTPException(status_code=400, detail="File must be an image")
@@ -1571,10 +1497,6 @@ async def analyze_with_questionnaire(
         ai_confidence = ai_analysis.get("confidence", 0.75)
         
         # 2. Calculate skin type from questionnaire
-        from models.skin_questionnaire import QuestionnaireRequest
-        from skin_analyzer import calculate_skin_type_from_questionnaire
-        
-        # Convert dict to QuestionnaireRequest object
         q_request = QuestionnaireRequest(
             self_assessed_skin_type=questionnaire_data.get("self_assessed_skin_type", "normal"),
             skin_concerns=questionnaire_data.get("skin_concerns", []),
@@ -1600,19 +1522,50 @@ async def analyze_with_questionnaire(
         q_confidence = questionnaire_result["confidence"]
         matching = questionnaire_result["matching_percentage"]
         
-        # 3. Combine results (weighted: 60% AI, 40% Questionnaire)
+        # 3. Combine results with DYNAMIC WEIGHTING
         type_scores = {"dry": 0, "oily": 0, "combination": 0, "sensitive": 0, "normal": 0}
-        type_scores[ai_skin_type] += 0.6 * ai_confidence
-        type_scores[q_skin_type] += 0.4 * q_confidence
         
+        # Dynamic weighting based on AI confidence
+        if ai_confidence > 0.80:
+            ai_weight = 0.70
+            q_weight = 0.30
+        elif ai_confidence < 0.65:
+            ai_weight = 0.50
+            q_weight = 0.50
+        else:
+            ai_weight = 0.60
+            q_weight = 0.40
+        
+        # Add weighted scores
+        type_scores[ai_skin_type] += ai_weight * ai_confidence
+        type_scores[q_skin_type] += q_weight * q_confidence
+        
+        # Agreement bonus
+        agreement_bonus = 1.0
+        if ai_skin_type == q_skin_type:
+            agreement_bonus = 1.15
+            type_scores[ai_skin_type] += 0.1
+        elif (ai_skin_type == "combination" and q_skin_type in ["normal", "oily"]) or \
+             (q_skin_type == "combination" and ai_skin_type in ["normal", "oily"]):
+            agreement_bonus = 1.05
+        
+        # Consider second best from questionnaire
+        if questionnaire_result.get("second_score", 0) > 0:
+            second_best = sorted(questionnaire_result["scores"].items(), key=lambda x: x[1], reverse=True)[1][0]
+            type_scores[second_best] += 0.05 * q_confidence
+        
+        # Get final skin type
         final_skin_type = max(type_scores, key=type_scores.get)
-        final_confidence = (ai_confidence * 0.6 + q_confidence * 0.4) * (0.7 + matching * 0.3)
-        final_confidence = min(0.95, final_confidence)
+        final_score = type_scores[final_skin_type]
+        
+        # Calculate final confidence
+        final_confidence = final_score * agreement_bonus * (0.65 + matching * 0.35)
+        final_confidence = min(0.94, max(0.60, final_confidence))
         
         # 4. Get skin care data
         skin_data = SKIN_CARE_DATA.get(final_skin_type, SKIN_CARE_DATA["normal"])
         
-        # Add specific recommendations based on user's concerns
+        # Add personalized recommendations
         personalized_recommendations = list(skin_data["recommendations"])
         for concern in questionnaire_data.get("skin_concerns", []):
             if concern == "acne" and "salicylic" not in str(personalized_recommendations).lower():
@@ -1709,7 +1662,43 @@ async def analyze_with_questionnaire(
     except Exception as e:
         logger.error(f"Questionnaire analysis error: {e}")
         raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
+
+# ============================================
+# DEBUG ENDPOINT
+# ============================================
+
+@app.get("/analyze/debug/{analysis_id}")
+async def debug_hybrid_analysis(analysis_id: str, user_id: str = Depends(verify_token)):
+    """Debug endpoint to check hybrid analysis details"""
+    async with get_db() as conn:
+        if hasattr(conn, 'fetchrow'):
+            analysis = await conn.fetchrow(
+                """SELECT * FROM analyses WHERE id = $1 AND user_id = $2""",
+                analysis_id, user_id
+            )
+            questionnaire = await conn.fetchrow(
+                """SELECT * FROM skin_questionnaires WHERE user_id = $2 ORDER BY created_at DESC LIMIT 1""",
+                user_id
+            )
+        else:
+            cursor = await conn.execute(
+                """SELECT * FROM analyses WHERE id = ? AND user_id = ?""",
+                (analysis_id, user_id)
+            )
+            analysis = await cursor.fetchone()
+            
+            cursor2 = await conn.execute(
+                """SELECT * FROM skin_questionnaires WHERE user_id = ? ORDER BY created_at DESC LIMIT 1""",
+                (user_id,)
+            )
+            questionnaire = await cursor2.fetchone()
         
+        return {
+            "analysis": dict(analysis) if analysis else None,
+            "questionnaire": dict(questionnaire) if questionnaire else None,
+            "message": "Debug information for hybrid analysis"
+        }
+
 # ============================================
 # WEATHER ENDPOINTS
 # ============================================
@@ -1739,7 +1728,6 @@ async def chat_endpoint(request: ChatRequest, user_id: str = Depends(verify_toke
         language = detect_language(request.message) if request.message else "english"
         return {"success": False, "response": "Tafadhali andika swali lako." if language == "swahili" else "Please write your question."}
     
-    # Get user context
     async with get_db() as conn:
         if hasattr(conn, 'fetchrow'):
             latest_analysis = await conn.fetchrow(
@@ -1753,7 +1741,6 @@ async def chat_endpoint(request: ChatRequest, user_id: str = Depends(verify_toke
             cursor2 = await conn.execute("SELECT name FROM users WHERE id = ?", (user_id,))
             user = await cursor2.fetchone()
     
-    # Natural system context
     system_context = """You are SkinSight AI, a friendly skincare assistant.
 
 Be warm and conversational. Respond to greetings naturally.
@@ -1777,7 +1764,6 @@ Be natural - don't say "I'm a skincare expert" every time. Just be helpful like 
         temperature=request.temperature or 0.85
     )
     
-    # Save to database
     if result.get("success") and result.get("response"):
         try:
             async with get_db() as conn:
@@ -1836,7 +1822,7 @@ async def clear_chat_history(user_id: str = Depends(verify_token)):
     return {"success": True, "message": "Chat history cleared"}
 
 # ============================================
-# PRODUCT ENDPOINTS (Simplified)
+# PRODUCT ENDPOINTS
 # ============================================
 
 @app.get("/products")
@@ -1875,6 +1861,7 @@ if __name__ == "__main__":
     print(f"🔌 Port: {port}")
     print(f"💾 Database: PostgreSQL (Production) / SQLite (Local)")
     print(f"💬 Chat Mode: Natural & Friendly - Skincare Focused")
+    print(f"🔬 Analysis Mode: AI + Questionnaire (Hybrid)")
     print("=" * 70)
     print("🚀 Server is ready!")
     print("=" * 70)
