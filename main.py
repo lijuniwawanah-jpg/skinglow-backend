@@ -719,7 +719,7 @@ def standardize_image_lighting(image_bytes: bytes) -> np.ndarray:
         return np.array(image.resize((500, 500)))
 
 # ============================================
-# SKIN ANALYSIS FUNCTIONS (Simplified)
+# SKIN ANALYSIS FUNCTIONS (FIXED - NO BIAS)
 # ============================================
 
 SKIN_CARE_DATA = {
@@ -761,13 +761,264 @@ SKIN_CARE_DATA = {
 }
 
 def analyze_with_mediapipe(image_bytes: bytes) -> Optional[Dict]:
-    return None
+    """Analyze skin using MediaPipe with multiple ROI sampling"""
+    if not MEDIAPIPE_AVAILABLE:
+        return None
+    
+    try:
+        import cv2
+        standardized_img = standardize_image_lighting(image_bytes)
+        image_rgb = cv2.cvtColor(standardized_img, cv2.COLOR_RGB2BGR)
+        image_rgb = cv2.cvtColor(image_rgb, cv2.COLOR_BGR2RGB)
+        
+        results = face_detection.process(image_rgb)
+        
+        if results.detections:
+            h, w, _ = standardized_img.shape
+            detection = results.detections[0]
+            bbox = detection.location_data.relative_bounding_box
+            x = max(0, int(bbox.xmin * w))
+            y = max(0, int(bbox.ymin * h))
+            width = min(w - x, int(bbox.width * w))
+            height = min(h - y, int(bbox.height * h))
+            
+            face_region = standardized_img[y:y+height, x:x+width]
+            
+            if face_region.size > 0:
+                fh, fw, _ = face_region.shape
+                
+                rois = {
+                    'forehead': face_region[int(fh*0.1):int(fh*0.35), int(fw*0.25):int(fw*0.75)],
+                    'left_cheek': face_region[int(fh*0.4):int(fh*0.7), int(fw*0.05):int(fw*0.3)],
+                    'right_cheek': face_region[int(fh*0.4):int(fh*0.7), int(fw*0.7):int(fw*0.95)],
+                    'chin': face_region[int(fh*0.7):int(fh*0.9), int(fw*0.3):int(fw*0.7)]
+                }
+                
+                results_list = []
+                for name, roi in rois.items():
+                    if roi.size > 0:
+                        gray = cv2.cvtColor(roi, cv2.COLOR_RGB2GRAY)
+                        texture_var = np.var(gray)
+                        avg_bright = np.mean(gray)
+                        
+                        if texture_var > 3500:
+                            roi_type = "oily"
+                        elif texture_var < 1800:
+                            roi_type = "dry"
+                        elif avg_bright > 200:
+                            roi_type = "sensitive"
+                        elif 100 < avg_bright < 160:
+                            roi_type = "combination"
+                        else:
+                            roi_type = "normal"
+                        
+                        results_list.append(roi_type)
+                
+                if results_list:
+                    counts = Counter(results_list)
+                    most_common = counts.most_common(1)[0]
+                    agreement = counts[most_common[0]] / len(results_list)
+                    
+                    if agreement >= 0.75:
+                        skin_type = most_common[0]
+                        confidence = 0.85 + (agreement - 0.75) * 0.1
+                    elif agreement >= 0.5:
+                        scores = {
+                            'dry': counts.get('dry', 0) * 1.5,
+                            'oily': counts.get('oily', 0) * 1.5,
+                            'combination': counts.get('combination', 0) * 1.2,
+                            'sensitive': counts.get('sensitive', 0) * 1.3,
+                            'normal': counts.get('normal', 0) * 1.0
+                        }
+                        skin_type = max(scores, key=scores.get)
+                        confidence = 0.75
+                    else:
+                        full_face_gray = cv2.cvtColor(face_region, cv2.COLOR_RGB2GRAY)
+                        texture_var = np.var(full_face_gray)
+                        avg_bright = np.mean(full_face_gray)
+                        
+                        if texture_var > 3500:
+                            skin_type = "oily"
+                        elif texture_var < 1800:
+                            skin_type = "dry"
+                        elif avg_bright > 200:
+                            skin_type = "sensitive"
+                        elif 100 < avg_bright < 160:
+                            skin_type = "combination"
+                        else:
+                            skin_type = "normal"
+                        confidence = 0.70
+                    
+                    return {
+                        "skin_type": skin_type,
+                        "confidence": min(0.95, confidence),
+                        "method": "AI Analysis"
+                    }
+        
+        return None
+    except Exception as e:
+        logger.error(f"MediaPipe analysis error: {e}")
+        return None
 
 def analyze_with_fallback(image_bytes: bytes) -> Dict:
-    return {"skin_type": "normal", "confidence": 0.75, "method": "Default"}
+    """Improved fallback analysis with multiple metrics - NO BIAS"""
+    try:
+        std_img = standardize_image_lighting(image_bytes)
+        
+        try:
+            import cv2
+            gray = cv2.cvtColor(std_img, cv2.COLOR_RGB2GRAY)
+        except:
+            pil_img = Image.open(io.BytesIO(image_bytes))
+            if pil_img.mode != 'RGB':
+                pil_img = pil_img.convert('RGB')
+            gray = np.array(pil_img.resize((200, 200)).convert('L'))
+        
+        texture_var = np.var(gray)
+        avg_brightness = np.mean(gray)
+        
+        # Initialize all scores to 0 - NO DEFAULT BIAS
+        scores = {"dry": 0, "oily": 0, "combination": 0, "sensitive": 0, "normal": 0}
+        
+        # Texture variance scoring (No default bias)
+        if texture_var > 3800:
+            scores["oily"] += 5
+            scores["combination"] += 2
+        elif texture_var > 3200:
+            scores["oily"] += 4
+            scores["combination"] += 3
+        elif texture_var > 2600:
+            scores["oily"] += 2
+            scores["combination"] += 4
+        elif texture_var > 2000:
+            scores["combination"] += 3
+            scores["normal"] += 2
+        elif texture_var > 1400:
+            scores["normal"] += 3
+            scores["combination"] += 1
+        elif texture_var > 800:
+            scores["dry"] += 2
+            scores["normal"] += 2
+            scores["sensitive"] += 1
+        else:
+            scores["dry"] += 4
+            scores["sensitive"] += 2
+        
+        # Brightness scoring (No default bias)
+        if avg_brightness > 220:
+            scores["dry"] += 4
+            scores["sensitive"] += 3
+        elif avg_brightness > 190:
+            scores["dry"] += 3
+            scores["sensitive"] += 2
+            scores["normal"] += 1
+        elif avg_brightness > 160:
+            scores["normal"] += 3
+            scores["combination"] += 1
+        elif avg_brightness > 130:
+            scores["combination"] += 3
+            scores["normal"] += 2
+        elif avg_brightness > 100:
+            scores["combination"] += 2
+            scores["oily"] += 2
+        elif avg_brightness > 70:
+            scores["oily"] += 3
+            scores["combination"] += 2
+        else:
+            scores["oily"] += 4
+        
+        # Get highest score
+        max_score = max(scores.values())
+        candidates = [k for k, v in scores.items() if v == max_score]
+        
+        # Handle ties - use more specific logic
+        if len(candidates) > 1:
+            # If tie between normal and something else, check texture_var
+            if "normal" in candidates:
+                if texture_var > 2000:
+                    return {"skin_type": "combination", "confidence": 0.72, "method": "Color Analysis"}
+                elif texture_var < 1200:
+                    return {"skin_type": "dry", "confidence": 0.70, "method": "Color Analysis"}
+            
+            # If tie between oily and combination
+            if "oily" in candidates and "combination" in candidates:
+                if texture_var > 3000:
+                    return {"skin_type": "oily", "confidence": 0.73, "method": "Color Analysis"}
+                else:
+                    return {"skin_type": "combination", "confidence": 0.71, "method": "Color Analysis"}
+            
+            # Default for other ties
+            skin_type = candidates[0]
+        else:
+            skin_type = candidates[0]
+        
+        # Calculate confidence based on score spread
+        sorted_scores = sorted(scores.values(), reverse=True)
+        score_spread = sorted_scores[0] - sorted_scores[1] if len(sorted_scores) > 1 else sorted_scores[0]
+        confidence = 0.65 + (score_spread / 20) * 0.25
+        confidence = min(0.85, confidence)
+        
+        return {
+            "skin_type": skin_type,
+            "confidence": confidence,
+            "method": "Color Analysis"
+        }
+        
+    except Exception as e:
+        logger.error(f"Fallback analysis error: {e}")
+        return {
+            "skin_type": "normal",
+            "confidence": 0.60,
+            "method": "Default Analysis"
+        }
 
 def analyze_with_consistency(image_bytes: bytes) -> Dict:
-    return analyze_with_fallback(image_bytes)
+    """Run multiple analyses and return consistent result"""
+    results = []
+    
+    # Try MediaPipe if available
+    result1 = analyze_with_mediapipe(image_bytes)
+    if result1:
+        results.append(result1)
+    
+    # Always run fallback for comparison
+    fallback_result = analyze_with_fallback(image_bytes)
+    results.append(fallback_result)
+    
+    # Get all skin types
+    skin_types = [r["skin_type"] for r in results]
+    confidences = [r["confidence"] for r in results]
+    
+    counts = Counter(skin_types)
+    most_common = counts.most_common(1)[0]
+    
+    # If all results agree OR majority vote
+    if len(set(skin_types)) == 1 or most_common[1] >= 2:
+        avg_confidence = sum(confidences) / len(confidences)
+        return {
+            "skin_type": most_common[0],
+            "confidence": min(0.95, avg_confidence),
+            "method": "Consensus Analysis"
+        }
+    
+    # If disagreement, use weighted decision based on texture_var
+    try:
+        import cv2
+        std_img = standardize_image_lighting(image_bytes)
+        gray = cv2.cvtColor(std_img, cv2.COLOR_RGB2GRAY)
+        texture_var = np.var(gray)
+        
+        # Decision tree based on texture
+        if texture_var > 3500:
+            return {"skin_type": "oily", "confidence": 0.72, "method": "Texture Analysis"}
+        elif texture_var < 1500:
+            return {"skin_type": "dry", "confidence": 0.70, "method": "Texture Analysis"}
+        elif 2200 < texture_var < 3200:
+            return {"skin_type": "combination", "confidence": 0.68, "method": "Texture Analysis"}
+        else:
+            return fallback_result
+    except:
+        return fallback_result
 
 # ============================================
 # PROFILE IMAGE CONFIGURATION
@@ -1255,6 +1506,13 @@ async def get_analysis_detail(analysis_id: str, user_id: str = Depends(verify_to
             raise HTTPException(status_code=404, detail="Analysis not found")
         
         result = dict(analysis)
+        if result.get("characteristics"):
+            result["characteristics"] = result["characteristics"].split("|")
+        if result.get("recommendations"):
+            result["recommendations"] = result["recommendations"].split("|")
+        if result.get("recommended_oils"):
+            result["recommended_oils"] = result["recommended_oils"].split("|")
+        
         return {"success": True, "analysis": result}
 
 @app.get("/users/stats")
@@ -1273,12 +1531,18 @@ async def get_user_stats(user_id: str = Depends(verify_token)):
         for a in analyses:
             skin_type_counts[a["skin_type"]] = skin_type_counts.get(a["skin_type"], 0) + 1
         
+        latest = analyses[0]
+        scores = {"normal": 92, "combination": 82, "dry": 78, "oily": 75, "sensitive": 70}
+        base_score = scores.get(latest["skin_type"], 85)
+        skin_health_score = int(base_score * (latest["confidence"] * 0.3 + 0.7))
+        
         return {
             "success": True,
             "total_analyses": len(analyses),
-            "current_skin_type": analyses[0]["skin_type"],
-            "skin_health_score": 85,
-            "skin_type_trends": skin_type_counts
+            "current_skin_type": latest["skin_type"],
+            "skin_health_score": skin_health_score,
+            "skin_type_trends": skin_type_counts,
+            "average_confidence": sum(a["confidence"] for a in analyses) / len(analyses)
         }
 
 # ============================================
