@@ -1889,6 +1889,137 @@ async def get_categories():
     return {"success": True, "categories": ["cleanser", "moisturizer", "sunscreen", "serum", "mask", "toner"]}
 
 # ============================================
+# ADDITIONAL ENDPOINTS FOR FLUTTER PROFILE SCREEN
+# ============================================
+
+@app.get("/user/stats")
+async def get_user_stats(user_id: str = Depends(verify_token)):
+    """Get user statistics - total analyses, current skin type, skin health score"""
+    try:
+        async with get_db() as conn:
+            # Get total analyses count
+            if hasattr(conn, 'fetchval'):
+                total_analyses = await conn.fetchval(
+                    "SELECT COUNT(*) FROM analyses WHERE user_id = $1",
+                    user_id
+                ) or 0
+            else:
+                cursor = await conn.execute(
+                    "SELECT COUNT(*) FROM analyses WHERE user_id = ?",
+                    (user_id,)
+                )
+                row = await cursor.fetchone()
+                total_analyses = row[0] if row else 0
+            
+            # Get most common skin type
+            if hasattr(conn, 'fetchrow'):
+                skin_type_result = await conn.fetchrow(
+                    """SELECT skin_type, COUNT(*) as count 
+                       FROM analyses 
+                       WHERE user_id = $1 
+                       GROUP BY skin_type 
+                       ORDER BY count DESC 
+                       LIMIT 1""",
+                    user_id
+                )
+            else:
+                cursor = await conn.execute(
+                    """SELECT skin_type, COUNT(*) as count 
+                       FROM analyses 
+                       WHERE user_id = ? 
+                       GROUP BY skin_type 
+                       ORDER BY count DESC 
+                       LIMIT 1""",
+                    (user_id,)
+                )
+                skin_type_result = await cursor.fetchone()
+            
+            current_skin_type = skin_type_result["skin_type"] if skin_type_result else "normal"
+            
+            # Get average confidence as skin health score
+            if hasattr(conn, 'fetchval'):
+                avg_confidence = await conn.fetchval(
+                    "SELECT AVG(confidence) FROM analyses WHERE user_id = $1",
+                    user_id
+                ) or 0.85
+            else:
+                cursor = await conn.execute(
+                    "SELECT AVG(confidence) FROM analyses WHERE user_id = ?",
+                    (user_id,)
+                )
+                row = await cursor.fetchone()
+                avg_confidence = row[0] if row and row[0] else 0.85
+            
+            skin_health_score = int(avg_confidence * 100)
+            
+            return {
+                "total_analyses": total_analyses,
+                "current_skin_type": current_skin_type,
+                "skin_health_score": skin_health_score
+            }
+    except Exception as e:
+        logger.error(f"Error getting user stats: {e}")
+        return {
+            "total_analyses": 0,
+            "current_skin_type": "normal",
+            "skin_health_score": 85
+        }
+
+@app.get("/analyses/{analysis_id}")
+async def get_single_analysis(analysis_id: str, user_id: str = Depends(verify_token)):
+    """Get single analysis by ID - for ResultsScreen"""
+    try:
+        async with get_db() as conn:
+            if hasattr(conn, 'fetchrow'):
+                analysis = await conn.fetchrow(
+                    """SELECT id, skin_type, skin_name, confidence, characteristics, 
+                              recommendations, recommended_oils, method, created_at 
+                       FROM analyses 
+                       WHERE id = $1 AND user_id = $2""",
+                    analysis_id, user_id
+                )
+            else:
+                cursor = await conn.execute(
+                    """SELECT id, skin_type, skin_name, confidence, characteristics, 
+                              recommendations, recommended_oils, method, created_at 
+                       FROM analyses 
+                       WHERE id = ? AND user_id = ?""",
+                    (analysis_id, user_id)
+                )
+                analysis = await cursor.fetchone()
+            
+            if not analysis:
+                raise HTTPException(status_code=404, detail="Analysis not found")
+            
+            # Parse pipe-separated strings back to lists
+            characteristics = analysis["characteristics"].split("|") if analysis["characteristics"] else []
+            recommendations = analysis["recommendations"].split("|") if analysis["recommendations"] else []
+            recommended_oils = analysis["recommended_oils"].split("|") if analysis["recommended_oils"] else []
+            
+            created_at = analysis["created_at"]
+            if hasattr(created_at, 'isoformat'):
+                created_at_str = created_at.isoformat()
+            else:
+                created_at_str = str(created_at)
+            
+            return {
+                "id": analysis["id"],
+                "skin_type": analysis["skin_type"],
+                "skin_name": analysis["skin_name"],
+                "confidence": float(analysis["confidence"]),
+                "characteristics": characteristics,
+                "recommendations": recommendations,
+                "recommended_oils": recommended_oils,
+                "method": analysis["method"],
+                "created_at": created_at_str
+            }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting analysis: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ============================================
 # STATIC FILES
 # ============================================
 
