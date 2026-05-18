@@ -2020,6 +2020,268 @@ async def get_single_analysis(analysis_id: str, user_id: str = Depends(verify_to
         raise HTTPException(status_code=500, detail=str(e))
 
 # ============================================
+# DELETE ACCOUNT ENDPOINT
+# ============================================
+
+@app.delete("/auth/delete-account")
+async def delete_account(
+    password: Optional[str] = None,
+    user_id: str = Depends(verify_token)
+):
+    """Permanently delete user account and all associated data"""
+    try:
+        async with get_db() as conn:
+            # 1. Verify user exists and get data
+            if hasattr(conn, 'fetchrow'):
+                user = await conn.fetchrow(
+                    "SELECT id, email, name, password_hash, role, profile_image FROM users WHERE id = $1",
+                    user_id
+                )
+            else:
+                cursor = await conn.execute(
+                    "SELECT id, email, name, password_hash, role, profile_image FROM users WHERE id = ?",
+                    (user_id,)
+                )
+                user = await cursor.fetchone()
+            
+            if not user:
+                raise HTTPException(status_code=404, detail="User not found")
+            
+            # 2. Verify password if provided (recommended for security)
+            if password:
+                if not verify_password(password, user["password_hash"]):
+                    raise HTTPException(status_code=401, detail="Incorrect password")
+            
+            # 3. Delete profile image if exists
+            if user.get("profile_image"):
+                profile_path = os.path.join(UPLOAD_DIR, os.path.basename(user["profile_image"]))
+                if os.path.exists(profile_path):
+                    os.remove(profile_path)
+                    logger.info(f"Deleted profile image for user {user_id}")
+            
+            # 4. Delete user's analysis history
+            if hasattr(conn, 'execute'):
+                await conn.execute("DELETE FROM analyses WHERE user_id = $1", user_id)
+                logger.info(f"Deleted analyses for user {user_id}")
+                
+                # 5. Delete chat history
+                await conn.execute("DELETE FROM chat_history WHERE user_id = $1", user_id)
+                logger.info(f"Deleted chat history for user {user_id}")
+                
+                # 6. Delete skin questionnaires
+                await conn.execute("DELETE FROM skin_questionnaires WHERE user_id = $1", user_id)
+                logger.info(f"Deleted questionnaires for user {user_id}")
+                
+                # 7. Delete user's products if vendor
+                if user["role"] == "vendor":
+                    await conn.execute("DELETE FROM products WHERE vendor_id = $1", user_id)
+                    logger.info(f"Deleted products for vendor {user_id}")
+                
+                # 8. Delete user's orders
+                await conn.execute("DELETE FROM orders WHERE user_id = $1", user_id)
+                logger.info(f"Deleted orders for user {user_id}")
+                
+                # 9. Delete user's reviews
+                await conn.execute("DELETE FROM reviews WHERE user_id = $1", user_id)
+                logger.info(f"Deleted reviews for user {user_id}")
+                
+                # 10. Finally, delete the user record
+                await conn.execute("DELETE FROM users WHERE id = $1", user_id)
+                logger.info(f"Deleted user account {user_id} ({user['email']})")
+            else:
+                # SQLite version
+                await conn.execute("DELETE FROM analyses WHERE user_id = ?", (user_id,))
+                await conn.execute("DELETE FROM chat_history WHERE user_id = ?", (user_id,))
+                await conn.execute("DELETE FROM skin_questionnaires WHERE user_id = ?", (user_id,))
+                
+                if user["role"] == "vendor":
+                    await conn.execute("DELETE FROM products WHERE vendor_id = ?", (user_id,))
+                
+                await conn.execute("DELETE FROM orders WHERE user_id = ?", (user_id,))
+                await conn.execute("DELETE FROM reviews WHERE user_id = ?", (user_id,))
+                await conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
+                logger.info(f"Deleted user account {user_id} ({user['email']})")
+        
+        # Log deletion for audit (optional - you can add a deleted_users table)
+        await log_account_deletion(user_id, user["email"], user["name"])
+        
+        return {
+            "success": True,
+            "message": "Account permanently deleted successfully"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Delete account error: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to delete account: {str(e)}")
+
+async def log_account_deletion(user_id: str, email: str, name: str = None):
+    """Log account deletion for audit purposes"""
+    try:
+        # Create audit log directory if not exists
+        audit_dir = "logs/audit"
+        os.makedirs(audit_dir, exist_ok=True)
+        
+        audit_file = os.path.join(audit_dir, f"deleted_accounts_{datetime.now().strftime('%Y%m')}.log")
+        
+        with open(audit_file, "a") as f:
+            f.write(f"{datetime.now().isoformat()} | {user_id} | {email} | {name or 'No name'}\n")
+        
+        logger.info(f"Audit log created for deleted account {email}")
+    except Exception as e:
+        logger.error(f"Failed to log account deletion: {e}")
+
+# ============================================
+# SOFT DELETE ACCOUNT (WITH RESTORE OPTION)
+# ============================================
+
+@app.post("/auth/deactivate-account")
+async def deactivate_account(user_id: str = Depends(verify_token)):
+    """Soft delete - deactivate account (can be restored within 30 days)"""
+    try:
+        async with get_db() as conn:
+            if hasattr(conn, 'execute'):
+                await conn.execute(
+                    """UPDATE users 
+                       SET is_active = 0, 
+                           deactivated_at = CURRENT_TIMESTAMP,
+                           updated_at = CURRENT_TIMESTAMP 
+                       WHERE id = $1""",
+                    user_id
+                )
+            else:
+                await conn.execute(
+                    """UPDATE users 
+                       SET is_active = 0, 
+                           deactivated_at = CURRENT_TIMESTAMP,
+                           updated_at = CURRENT_TIMESTAMP 
+                       WHERE id = ?""",
+                    (user_id,)
+                )
+        
+        return {
+            "success": True,
+            "message": "Account deactivated. You have 30 days to restore before permanent deletion."
+        }
+    except Exception as e:
+        logger.error(f"Deactivate account error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/auth/restore-account")
+async def restore_account(user_id: str = Depends(verify_token)):
+    """Restore a deactivated account"""
+    try:
+        async with get_db() as conn:
+            if hasattr(conn, 'fetchrow'):
+                user = await conn.fetchrow(
+                    "SELECT deactivated_at FROM users WHERE id = $1 AND is_active = 0",
+                    user_id
+                )
+            else:
+                cursor = await conn.execute(
+                    "SELECT deactivated_at FROM users WHERE id = ? AND is_active = 0",
+                    (user_id,)
+                )
+                user = await cursor.fetchone()
+            
+            if not user:
+                raise HTTPException(status_code=404, detail="No deactivated account found")
+            
+            # Check if within 30-day grace period
+            deactivated_at = user["deactivated_at"]
+            if hasattr(deactivated_at, 'timestamp'):
+                days_deactivated = (datetime.now() - deactivated_at).days
+            else:
+                days_deactivated = 0
+            
+            if days_deactivated > 30:
+                raise HTTPException(
+                    status_code=400, 
+                    detail="Account is beyond 30-day recovery period and has been permanently deleted"
+                )
+            
+            if hasattr(conn, 'execute'):
+                await conn.execute(
+                    """UPDATE users 
+                       SET is_active = 1, 
+                           deactivated_at = NULL,
+                           updated_at = CURRENT_TIMESTAMP 
+                       WHERE id = $1""",
+                    user_id
+                )
+            else:
+                await conn.execute(
+                    """UPDATE users 
+                       SET is_active = 1, 
+                           deactivated_at = NULL,
+                           updated_at = CURRENT_TIMESTAMP 
+                       WHERE id = ?""",
+                    (user_id,)
+                )
+        
+        return {
+            "success": True,
+            "message": "Account restored successfully"
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Restore account error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ============================================
+# SCHEDULED TASK: PERMANENTLY DELETE OLD DEACTIVATED ACCOUNTS
+# ============================================
+
+async def cleanup_deactivated_accounts():
+    """Run this as a scheduled task (e.g., daily cron job) to permanently delete accounts deactivated > 30 days"""
+    try:
+        async with get_db() as conn:
+            # Find accounts deactivated more than 30 days ago
+            if hasattr(conn, 'fetch'):
+                old_accounts = await conn.fetch(
+                    """SELECT id, email, profile_image 
+                       FROM users 
+                       WHERE is_active = 0 
+                       AND deactivated_at < datetime('now', '-30 days')"""
+                )
+            else:
+                cursor = await conn.execute(
+                    """SELECT id, email, profile_image 
+                       FROM users 
+                       WHERE is_active = 0 
+                       AND deactivated_at < datetime('now', '-30 days')"""
+                )
+                old_accounts = await cursor.fetchall()
+            
+            for account in old_accounts:
+                # Delete profile image
+                if account.get("profile_image"):
+                    profile_path = os.path.join(UPLOAD_DIR, os.path.basename(account["profile_image"]))
+                    if os.path.exists(profile_path):
+                        os.remove(profile_path)
+                
+                # Delete all user data
+                if hasattr(conn, 'execute'):
+                    await conn.execute("DELETE FROM analyses WHERE user_id = $1", account["id"])
+                    await conn.execute("DELETE FROM chat_history WHERE user_id = $1", account["id"])
+                    await conn.execute("DELETE FROM skin_questionnaires WHERE user_id = $1", account["id"])
+                    await conn.execute("DELETE FROM users WHERE id = $1", account["id"])
+                else:
+                    await conn.execute("DELETE FROM analyses WHERE user_id = ?", (account["id"],))
+                    await conn.execute("DELETE FROM chat_history WHERE user_id = ?", (account["id"],))
+                    await conn.execute("DELETE FROM skin_questionnaires WHERE user_id = ?", (account["id"],))
+                    await conn.execute("DELETE FROM users WHERE id = ?", (account["id"],))
+                
+                logger.info(f"Permanently deleted deactivated account {account['email']} after 30-day grace period")
+        
+        return {"success": True, "deleted": len(old_accounts)}
+    except Exception as e:
+        logger.error(f"Cleanup error: {e}")
+        return {"success": False, "error": str(e)}
+
+# ============================================
 # STATIC FILES
 # ============================================
 
